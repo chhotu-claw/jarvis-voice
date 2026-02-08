@@ -729,7 +729,18 @@ wakeToggle.addEventListener('change', () => {
 });
 
 // ── Push-to-talk ──
-let pttStream = null, pttRecorder = null, pttBlobs = [];
+let pttStream = null, pttRecorder = null, pttBlobs = [], pttAnalyser = null, pttAnimFrame = null;
+
+function animatePttWaveform() {
+  if (!pttAnalyser || !isRecording) return;
+  const data = new Uint8Array(pttAnalyser.frequencyBinCount);
+  pttAnalyser.getByteFrequencyData(data);
+  const avg = data.reduce((s,v) => s+v, 0) / data.length / 255;
+  waveform.querySelectorAll('.bar').forEach((b,i) => {
+    b.style.height = Math.min(36, Math.max(3, avg * 60 * (1 + Math.sin(i*0.5 + Date.now()*0.008)))) + 'px';
+  });
+  pttAnimFrame = requestAnimationFrame(animatePttWaveform);
+}
 
 async function startPTT() {
   if (isRecording || autoRecording) return;
@@ -739,6 +750,12 @@ async function startPTT() {
   const stream = wakeStream || await navigator.mediaDevices.getUserMedia({ audio: true });
   if (!wakeStream) pttStream = stream;
   pttBlobs = [];
+  const actx = new AudioContext();
+  const src = actx.createMediaStreamSource(stream);
+  pttAnalyser = actx.createAnalyser();
+  pttAnalyser.fftSize = 256;
+  src.connect(pttAnalyser);
+  animatePttWaveform();
   pttRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
   pttRecorder.ondataavailable = (ev) => { if (ev.data.size) pttBlobs.push(ev.data); };
   pttRecorder.start(100);
@@ -752,24 +769,20 @@ async function stopPTT() {
     pttRecorder.stop();
     await new Promise(r => { pttRecorder.onstop = r; });
   }
+  if (pttAnimFrame) { cancelAnimationFrame(pttAnimFrame); pttAnimFrame = null; }
+  pttAnalyser = null;
+  waveform.querySelectorAll('.bar').forEach(b => b.style.height = '3px');
   if (pttStream) { pttStream.getTracks().forEach(t => t.stop()); pttStream = null; }
   if (pttBlobs.length && ws && ws.readyState === 1) {
     try {
       const combined = new Blob(pttBlobs, { type: 'audio/webm;codecs=opus' });
       const buf = await combined.arrayBuffer();
-      const ctx = new OfflineAudioContext(1, 480000, 16000);
-      const abuf = await ctx.decodeAudioData(buf);
-      const pcm = abuf.getChannelData(0);
-      const int16 = new Int16Array(pcm.length);
-      for (let i = 0; i < pcm.length; i++) {
-        int16[i] = Math.max(-32768, Math.min(32767, pcm[i] * 32768));
-      }
-      const u8 = new Uint8Array(int16.buffer);
+      const u8 = new Uint8Array(buf);
       let bin = '';
       for (let i = 0; i < u8.length; i += 8192) {
         bin += String.fromCharCode(...u8.subarray(i, Math.min(i + 8192, u8.length)));
       }
-      ws.send(JSON.stringify({ type: 'audio', audio: btoa(bin), sampleRate: 16000 }));
+      ws.send(JSON.stringify({ type: 'audio', audio: btoa(bin), format: 'webm' }));
     } catch(e) { console.error('PTT decode error:', e); }
   }
   pttBlobs = [];

@@ -108,9 +108,33 @@ def get_whisper():
         _whisper_model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
     return _whisper_model
 
-def transcribe_audio(audio_bytes: bytes, sample_rate: int = 16000) -> str:
+def convert_webm_to_pcm(webm_bytes: bytes) -> bytes:
+    """Convert webm/opus audio to 16kHz mono PCM int16 using ffmpeg."""
+    import subprocess
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as inf:
+        inf.write(webm_bytes)
+        in_path = inf.name
+    out_path = in_path.replace(".webm", ".wav")
+    try:
+        subprocess.run([
+            "ffmpeg", "-y", "-i", in_path,
+            "-ar", "16000", "-ac", "1", "-f", "s16le", out_path
+        ], capture_output=True, check=True)
+        with open(out_path, "rb") as f:
+            return f.read()
+    finally:
+        os.unlink(in_path)
+        if os.path.exists(out_path):
+            os.unlink(out_path)
+
+
+def transcribe_audio(audio_bytes: bytes, sample_rate: int = 16000, audio_format: str = "pcm") -> str:
     """Transcribe audio bytes to text using Whisper."""
     model = get_whisper()
+    
+    if audio_format == "webm":
+        audio_bytes = convert_webm_to_pcm(audio_bytes)
+        sample_rate = 16000
     
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         with wave.open(f, 'wb') as wav:
@@ -290,10 +314,10 @@ async def stream_tts_to_ws(ws, text: str):
     await ws.send_json({"type": "audio_end", "chunks": chunk_count})
 
 
-async def process_voice(ws: WebSocket, audio_bytes: bytes, sample_rate: int = 16000):
+async def process_voice(ws: WebSocket, audio_bytes: bytes, sample_rate: int = 16000, audio_format: str = "pcm"):
     """Transcribe → LLM → TTS → send back. Routes to Claude if needed."""
     await ws.send_json({"type": "status", "status": "transcribing"})
-    text = await asyncio.to_thread(transcribe_audio, audio_bytes, sample_rate)
+    text = await asyncio.to_thread(transcribe_audio, audio_bytes, sample_rate, audio_format)
     
     if not text.strip():
         await ws.send_json({"type": "status", "status": "idle"})
@@ -354,8 +378,9 @@ async def voice_ws(ws: WebSocket):
                 # Push-to-talk: receive audio, transcribe, respond
                 audio_b64 = data.get("audio", "")
                 sample_rate = data.get("sampleRate", 16000)
+                audio_format = data.get("format", "pcm")
                 audio_bytes = base64.b64decode(audio_b64)
-                await process_voice(ws, audio_bytes, sample_rate)
+                await process_voice(ws, audio_bytes, sample_rate, audio_format)
             
             elif msg_type == "wake_audio":
                 # Continuous audio stream for wake word detection
