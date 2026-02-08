@@ -1,0 +1,830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CHHOTU // NEURAL INTERFACE</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script type="importmap">
+{
+  "imports": {
+    "three": "/static/three.module.js"
+  }
+}
+</script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #060612; --surface: #0c0c1e; --surface2: #12122a;
+    --border: rgba(0,255,200,0.08); --border-bright: rgba(0,255,200,0.2);
+    --text: #c8d6e5; --text-dim: #4a5568; --text-bright: #e8f0fe;
+    --cyan: #00ffc8; --cyan-dim: rgba(0,255,200,0.15); --cyan-glow: rgba(0,255,200,0.3);
+    --purple: #8b5cf6; --purple-glow: rgba(139,92,246,0.3);
+    --green: #00ff88; --green-glow: rgba(0,255,136,0.3);
+    --orange: #ff9f1c; --orange-glow: rgba(255,159,28,0.3);
+    --red: #ff3366; --red-glow: rgba(255,51,102,0.3);
+    --blue: #00b4d8;
+  }
+
+  body {
+    font-family: 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh; overflow: hidden;
+    background-image:
+      radial-gradient(ellipse at 20% 50%, rgba(0,255,200,0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 20%, rgba(139,92,246,0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 80%, rgba(0,180,255,0.05) 0%, transparent 50%);
+  }
+
+  /* Grid overlay */
+  body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image:
+      linear-gradient(rgba(0,255,200,0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,200,0.05) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  .container { display: flex; height: 100vh; position: relative; z-index: 1; }
+
+  /* ── Main View Panel ── */
+  .main-panel {
+    flex: 1; display: flex; flex-direction: column; min-width: 0;
+    border-right: 1px solid var(--border);
+  }
+
+  .main-header {
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+
+  .main-header .title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 11px; font-weight: 500;
+    color: var(--cyan); letter-spacing: 3px; text-transform: uppercase;
+  }
+
+  .view-toggle {
+    display: flex; gap: 2px; background: var(--bg); border-radius: 6px; padding: 2px;
+    border: 1px solid var(--border);
+  }
+  .view-toggle button {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    padding: 6px 14px; border: none; border-radius: 4px;
+    background: transparent; color: var(--text-dim); cursor: pointer;
+    transition: all 0.3s;
+  }
+  .view-toggle button.active {
+    background: var(--cyan-dim); color: var(--cyan);
+    box-shadow: 0 0 12px var(--cyan-glow), inset 0 0 8px rgba(0,255,200,0.05);
+  }
+  .view-toggle button:hover:not(.active) { color: var(--text); }
+
+  .main-content { flex: 1; position: relative; background: transparent; overflow: hidden; }
+  .main-content > .view { position: absolute; inset: 0; transition: opacity 0.4s; }
+  .main-content > .view.hidden { opacity: 0; pointer-events: none; }
+
+  /* VNC */
+  #vncView iframe { width: 100%; height: 100%; border: none; }
+
+  /* Face view */
+  #faceView {
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg);
+    background-image:
+      radial-gradient(circle at 50% 50%, rgba(0,255,200,0.1) 0%, transparent 60%);
+  }
+  #faceContainer { width: 100%; height: 100%; position: relative; }
+  #faceContainer canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
+
+  /* ── Collapse Button ── */
+  .collapse-btn {
+    width: 20px; background: var(--surface); border: none;
+    border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+    color: var(--cyan); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; flex-shrink: 0; opacity: 0.5;
+    transition: opacity 0.3s;
+  }
+  .collapse-btn:hover { opacity: 1; background: var(--surface2); }
+
+  /* ── Chat Panel ── */
+  .chat-panel {
+    width: 380px; display: flex; flex-direction: column;
+    background: var(--surface); flex-shrink: 0;
+    transition: width 0.3s; overflow: hidden;
+    border-left: 1px solid var(--border);
+  }
+  .chat-panel.collapsed { width: 0; min-width: 0; }
+  .chat-panel.collapsed > * { display: none; }
+
+  .chat-header {
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    text-align: center; position: relative; overflow: hidden;
+  }
+
+  /* Scan line in chat header */
+  .chat-header::after {
+    content: ''; position: absolute; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+    opacity: 0.1; animation: scanline 6s linear infinite;
+  }
+  @keyframes scanline { 0% { top: 0; } 100% { top: 100%; } }
+
+  .agent-name {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 16px; font-weight: 600; color: var(--cyan);
+    letter-spacing: 4px; text-transform: uppercase;
+    text-shadow: 0 0 20px var(--cyan-glow);
+  }
+  .agent-sub {
+    font-size: 9px; color: var(--text-dim); letter-spacing: 2px;
+    margin-top: 4px; text-transform: uppercase;
+  }
+
+  .status-bar {
+    display: flex; align-items: center; justify-content: center;
+    gap: 8px; margin-top: 8px; font-size: 10px; color: var(--text-dim);
+  }
+  .status-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green); box-shadow: 0 0 8px var(--green-glow);
+  }
+  .status-dot.thinking { background: var(--orange); box-shadow: 0 0 8px var(--orange-glow); animation: pulse 1s infinite; }
+  .status-dot.speaking { background: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow); animation: pulse 0.5s infinite; }
+  .status-dot.listening { background: var(--red); box-shadow: 0 0 8px var(--red-glow); animation: pulse 0.8s infinite; }
+  .status-dot.wake { background: var(--green); box-shadow: 0 0 8px var(--green-glow); animation: pulse 2s infinite; }
+  .status-dot.transcribing { background: var(--purple); box-shadow: 0 0 8px var(--purple-glow); animation: pulse 0.6s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* ── Messages ── */
+  .messages {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  .messages::-webkit-scrollbar { width: 4px; }
+  .messages::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
+
+  .msg {
+    max-width: 88%; padding: 10px 14px; font-size: 12px;
+    line-height: 1.6; word-wrap: break-word; position: relative;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, rgba(139,92,246,0.2), rgba(139,92,246,0.1));
+    border: 1px solid rgba(139,92,246,0.2);
+    border-radius: 12px 12px 4px 12px;
+    color: var(--text-bright);
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    background: linear-gradient(135deg, rgba(0,255,200,0.06), rgba(0,255,200,0.02));
+    border: 1px solid var(--border);
+    border-radius: 12px 12px 12px 4px;
+    color: var(--text);
+  }
+  .msg.assistant::before {
+    content: '▸'; position: absolute; left: -12px; top: 10px;
+    color: var(--cyan); font-size: 10px; opacity: 0.5;
+  }
+  .msg.system {
+    align-self: center; background: none; border: none;
+    color: var(--text-dim); font-size: 10px; letter-spacing: 0.5px;
+    padding: 4px 0;
+  }
+  .msg.routed { border-left: 2px solid var(--orange); }
+
+  /* ── Voice Area ── */
+  .voice-area {
+    padding: 14px 20px; border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    background: var(--surface2);
+  }
+
+  .waveform {
+    height: 36px; display: flex; align-items: center; justify-content: center; gap: 2px;
+  }
+  .waveform .bar {
+    width: 2px; background: var(--cyan); border-radius: 1px;
+    transition: height 0.1s; box-shadow: 0 0 4px var(--cyan-glow);
+  }
+
+  .voice-controls { display: flex; align-items: center; gap: 16px; }
+
+  .mic-btn {
+    width: 52px; height: 52px; border-radius: 50%;
+    border: 1px solid var(--cyan); background: transparent;
+    color: var(--cyan); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.3s; font-size: 20px;
+    box-shadow: 0 0 15px rgba(0,255,200,0.1), inset 0 0 15px rgba(0,255,200,0.05);
+  }
+  .mic-btn:hover {
+    background: var(--cyan-dim);
+    box-shadow: 0 0 25px var(--cyan-glow), inset 0 0 20px rgba(0,255,200,0.1);
+  }
+  .mic-btn.recording {
+    background: rgba(255,51,102,0.15); border-color: var(--red); color: var(--red);
+    box-shadow: 0 0 25px var(--red-glow), inset 0 0 20px rgba(255,51,102,0.1);
+    animation: pulse-ring 1.5s infinite;
+  }
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 rgba(255,51,102,0.3), 0 0 25px var(--red-glow); }
+    70% { box-shadow: 0 0 0 12px rgba(255,51,102,0), 0 0 25px var(--red-glow); }
+    100% { box-shadow: 0 0 0 0 rgba(255,51,102,0), 0 0 25px var(--red-glow); }
+  }
+
+  .wake-toggle {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; color: var(--text-dim); cursor: pointer; user-select: none;
+    letter-spacing: 0.5px;
+  }
+  .wake-toggle input { display: none; }
+  .wake-switch {
+    width: 32px; height: 16px; background: var(--bg);
+    border: 1px solid var(--border-bright); border-radius: 8px;
+    position: relative; transition: all 0.3s;
+  }
+  .wake-switch::after {
+    content: ''; position: absolute; width: 12px; height: 12px;
+    background: var(--text-dim); border-radius: 50%; top: 1px; left: 1px;
+    transition: all 0.3s;
+  }
+  .wake-toggle input:checked + .wake-switch {
+    background: var(--cyan-dim); border-color: var(--cyan);
+  }
+  .wake-toggle input:checked + .wake-switch::after {
+    left: 17px; background: var(--cyan);
+    box-shadow: 0 0 6px var(--cyan-glow);
+  }
+
+  .wake-indicator {
+    display: none; align-items: center; gap: 6px;
+    font-size: 9px; color: var(--green); letter-spacing: 1px;
+    padding: 3px 10px; background: rgba(0,255,136,0.06);
+    border: 1px solid rgba(0,255,136,0.1); border-radius: 12px;
+  }
+  .wake-indicator.active { display: flex; }
+  .wake-indicator .dot {
+    width: 5px; height: 5px; background: var(--green);
+    border-radius: 50%; animation: pulse 2s infinite;
+    box-shadow: 0 0 6px var(--green-glow);
+  }
+
+  .voice-label {
+    font-size: 9px; color: var(--text-dim);
+    letter-spacing: 1px; text-transform: uppercase;
+  }
+
+  /* Volume */
+  .vol-row {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    font-size: 12px; color: var(--text-dim);
+  }
+  .vol-row input[type=range] {
+    flex: 1; accent-color: var(--cyan); cursor: pointer;
+    height: 3px;
+  }
+
+  /* ── Text Input ── */
+  .text-input-area {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; background: var(--surface);
+  }
+  .text-input-area input {
+    flex: 1; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px 14px; color: var(--text);
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    outline: none; transition: border-color 0.3s;
+  }
+  .text-input-area input:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 8px rgba(0,255,200,0.1);
+  }
+  .text-input-area input::placeholder { color: var(--text-dim); }
+  .text-input-area button {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
+    background: transparent; border: 1px solid var(--cyan);
+    border-radius: 6px; padding: 10px 18px; color: var(--cyan);
+    cursor: pointer; transition: all 0.3s;
+  }
+  .text-input-area button:hover {
+    background: var(--cyan-dim);
+    box-shadow: 0 0 12px var(--cyan-glow);
+  }
+
+  /* ── Corner decorations ── */
+  .corner-tl, .corner-tr, .corner-bl, .corner-br {
+    position: fixed; width: 20px; height: 20px; z-index: 10; pointer-events: none;
+    opacity: 0.3;
+  }
+  .corner-tl { top: 4px; left: 4px; border-top: 1px solid var(--cyan); border-left: 1px solid var(--cyan); }
+  .corner-tr { top: 4px; right: 4px; border-top: 1px solid var(--cyan); border-right: 1px solid var(--cyan); }
+  .corner-bl { bottom: 4px; left: 4px; border-bottom: 1px solid var(--cyan); border-left: 1px solid var(--cyan); }
+  .corner-br { bottom: 4px; right: 4px; border-bottom: 1px solid var(--cyan); border-right: 1px solid var(--cyan); }
+
+  /* ── HUD info ── */
+  .hud-top {
+    position: fixed; top: 6px; left: 50%; transform: translateX(-50%);
+    font-family: 'Orbitron', sans-serif; font-size: 8px;
+    color: var(--text-dim); letter-spacing: 3px; z-index: 10; opacity: 0.4;
+  }
+
+  @media (max-width: 900px) {
+    .container { flex-direction: column; }
+    .main-panel { height: 45vh; border-right: none; border-bottom: 1px solid var(--border); }
+    .chat-panel { width: 100%; height: 55vh; }
+    .collapse-btn { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Corner decorations -->
+<div class="corner-tl"></div><div class="corner-tr"></div>
+<div class="corner-bl"></div><div class="corner-br"></div>
+<div class="hud-top">NEURAL INTERFACE v2.0 // ACTIVE</div>
+
+<div class="container">
+  <!-- Main panel: Face or VNC -->
+  <div class="main-panel">
+    <div class="main-header">
+      <span class="title">◈ Chhotu Neural Link</span>
+      <div class="view-toggle" id="viewToggle">
+        <button class="active" data-view="face">◉ Avatar</button>
+        <button data-view="vnc">⊞ Desktop</button>
+      </div>
+    </div>
+    <div class="main-content">
+      <div class="view" id="faceView">
+        <div id="faceContainer"></div>
+      </div>
+      <div class="view hidden" id="vncView">
+        <iframe id="vnc-frame"></iframe>
+      </div>
+    </div>
+  </div>
+
+  <button class="collapse-btn" id="collapseBtn" title="Toggle sidebar">›</button>
+
+  <!-- Chat panel -->
+  <div class="chat-panel" id="chatPanel">
+    <div class="chat-header">
+      <div class="agent-name">Chhotu</div>
+      <div class="agent-sub">Autonomous Neural Agent // Online</div>
+      <div class="status-bar">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Systems Ready</span>
+      </div>
+    </div>
+
+    <div class="messages" id="messages">
+      <div class="msg system">◈ Neural link established. Voice interface active.</div>
+    </div>
+
+    <div class="voice-area">
+      <div class="waveform" id="waveform"></div>
+      <div class="voice-controls">
+        <button class="mic-btn" id="micBtn" title="Hold to talk">🎤</button>
+        <div>
+          <label class="wake-toggle">
+            <input type="checkbox" id="wakeToggle">
+            <span class="wake-switch"></span>
+            <span>Wake Word</span>
+          </label>
+          <div class="wake-indicator" id="wakeIndicator">
+            <span class="dot"></span> Listening...
+          </div>
+        </div>
+      </div>
+      <div class="vol-row">
+        <span>◁</span>
+        <input type="range" id="volumeSlider" min="0" max="100" value="50">
+        <span>◈</span>
+      </div>
+      <div class="voice-label" id="voiceLabel">Push to talk</div>
+    </div>
+
+    <div class="text-input-area">
+      <input type="text" id="textInput" placeholder="Enter command..." />
+      <button id="sendBtn">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const micBtn = $('micBtn'), messages = $('messages'), statusDot = $('statusDot'),
+      statusText = $('statusText'), textInput = $('textInput'), voiceLabel = $('voiceLabel'),
+      waveform = $('waveform'), wakeToggle = $('wakeToggle'), wakeIndicator = $('wakeIndicator');
+
+// ── View Toggle (Face / VNC) ──
+document.querySelectorAll('.view-toggle button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.view-toggle button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const view = btn.dataset.view;
+    document.querySelectorAll('.main-content > .view').forEach(v => v.classList.add('hidden'));
+    document.getElementById(view === 'face' ? 'faceView' : 'vncView').classList.remove('hidden');
+    // Resize face if switching to it
+    if (view === 'face' && window._face3d) {
+      const c = $('faceContainer');
+      // face auto-fills container
+    }
+  });
+});
+
+// Waveform bars
+for (let i = 0; i < 24; i++) { const b = document.createElement('div'); b.className = 'bar'; b.style.height = '3px'; waveform.appendChild(b); }
+
+// ── State ──
+let ws = null, isRecording = false, isProcessing = false, wakeActive = false;
+let autoRecording = false, silenceTimer = null;
+let conversationMode = false, conversationTimer = null;
+const CONVERSATION_TIMEOUT = 30000;
+
+// ── Helpers ──
+function getFace() { return window._face3d || null; }
+
+function setStatus(state, text) {
+  statusDot.className = 'status-dot ' + (state || '');
+  statusText.textContent = text || 'Systems Ready';
+  const f = getFace(); if (f) f.setState(state || 'idle');
+  voiceLabel.textContent = state === 'listening' ? '● Recording...' : state === 'thinking' ? '◌ Processing...' :
+    state === 'speaking' ? '◈ Speaking...' : wakeActive ? 'Say "Hey Jarvis" or push to talk' : 'Push to talk';
+}
+
+function addMsg(type, text, routed) {
+  const d = document.createElement('div');
+  d.className = `msg ${type}${routed ? ' routed' : ''}`;
+  d.textContent = text;
+  messages.appendChild(d);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+let ttsVolume = 0.5;
+document.getElementById('volumeSlider').addEventListener('input', (e) => { ttsVolume = e.target.value / 100; });
+
+// ── Streaming audio queue ──
+let audioQueue = [];
+let isPlayingQueue = false;
+let streamComplete = false;
+
+function queueAudioChunk(b64) {
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  audioQueue.push(bytes);
+  if (!isPlayingQueue) playNextChunk();
+}
+
+function playNextChunk() {
+  if (audioQueue.length === 0) {
+    isPlayingQueue = false;
+    if (streamComplete) {
+      streamComplete = false;
+      if (conversationMode && !autoRecording && !isRecording) {
+        resetConversationTimer();
+        setTimeout(() => {
+          if (conversationMode && !autoRecording && !isRecording && !isProcessing) {
+            playBeep();
+            startAutoRecord();
+          }
+        }, 300);
+      } else {
+        setStatus(wakeActive ? 'wake' : '', wakeActive ? 'Listening for wake word' : 'Systems Ready');
+      }
+    }
+    return;
+  }
+  isPlayingQueue = true;
+  const bytes = audioQueue.shift();
+  const audio = new Audio(URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' })));
+  audio.volume = ttsVolume;
+  audio.onended = () => { const f = getFace(); if (f) f.setMouthOpen(0); playNextChunk(); };
+  audio.play().then(() => {
+    try {
+      if (!window._mouthCtx) window._mouthCtx = new AudioContext();
+      const src = window._mouthCtx.createMediaElementSource(audio);
+      const analyser = window._mouthCtx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      analyser.connect(window._mouthCtx.destination);
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      const pump = () => {
+        if (audio.ended || audio.paused) return;
+        analyser.getByteFrequencyData(buf);
+        let sum = 0; for (let i = 0; i < 20; i++) sum += buf[i];
+        const level = Math.min(1, sum / (20 * 180));
+        const f = getFace(); if (f) f.setMouthOpen(level);
+        requestAnimationFrame(pump);
+      };
+      pump();
+    } catch(e) {}
+  }).catch(() => playNextChunk());
+}
+
+function onStreamEnd() {
+  streamComplete = true;
+  if (!isPlayingQueue) playNextChunk();
+}
+
+function playAudio(b64) {
+  audioQueue = [];
+  streamComplete = true;
+  queueAudioChunk(b64);
+}
+
+function playBeep() {
+  const ctx = new AudioContext(), osc = ctx.createOscillator(), g = ctx.createGain();
+  osc.connect(g); g.connect(ctx.destination); osc.frequency.value = 800; g.gain.value = 0.15;
+  osc.start(); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+  osc.stop(ctx.currentTime + 0.2); setTimeout(() => ctx.close(), 300);
+}
+
+// ── WebSocket ──
+function connect() {
+  if (ws && ws.readyState <= 1) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws/voice`);
+  ws.onopen = () => {
+    setStatus('', 'Link Established');
+    addMsg('system', '◈ Connected to neural interface');
+    if (wakeToggle.checked) ws.send(JSON.stringify({ type: 'wake_enable' }));
+  };
+  ws.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    if (d.type === 'status') {
+      if (d.status === 'idle') {
+        isProcessing = false;
+        if (conversationMode) setStatus('wake', 'Conversation mode');
+        else setStatus(wakeActive ? 'wake' : '', wakeActive ? 'Listening for wake word' : 'Systems Ready');
+      }
+      else setStatus(d.status, d.status.charAt(0).toUpperCase() + d.status.slice(1));
+    }
+    else if (d.type === 'transcript') addMsg('user', d.text);
+    else if (d.type === 'response') addMsg('assistant', d.text, d.routed);
+    else if (d.type === 'audio') playAudio(d.audio);
+    else if (d.type === 'audio_chunk') queueAudioChunk(d.audio);
+    else if (d.type === 'audio_end') onStreamEnd();
+    else if (d.type === 'wake_detected') onWakeDetected();
+    else if (d.type === 'wake_status') {
+      wakeActive = d.enabled;
+      wakeIndicator.classList.toggle('active', d.enabled);
+      if (d.enabled) { addMsg('system', '◈ Wake word active — say "Hey Jarvis"'); setStatus('wake', 'Listening for wake word'); }
+    }
+  };
+  ws.onclose = () => { ws = null; setStatus('', 'Link Severed'); setTimeout(connect, 3000); };
+}
+
+// ── Wake Word ──
+let wakeStream = null, wakeRecorder = null;
+let wakeAudioCtx = null, wakeWorkletNode = null, wakeSourceNode = null;
+
+async function startWakeStream() {
+  if (wakeStream) return;
+  try {
+    wakeStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    wakeAudioCtx = new AudioContext();
+    await wakeAudioCtx.resume();
+    await wakeAudioCtx.audioWorklet.addModule('/static/audio-processor.js');
+    wakeSourceNode = wakeAudioCtx.createMediaStreamSource(wakeStream);
+    wakeWorkletNode = new AudioWorkletNode(wakeAudioCtx, 'wake-word-processor');
+    const srcRate = wakeAudioCtx.sampleRate, dstRate = 16000, ratio = srcRate / dstRate;
+    let chunkCount = 0;
+
+    wakeWorkletNode.port.onmessage = (e) => {
+      if (e.data.type !== 'audio' || !wakeActive || isProcessing) return;
+      const float32 = e.data.buffer;
+      const dstLen = Math.floor(float32.length / ratio);
+      const int16 = new Int16Array(dstLen);
+      for (let i = 0; i < dstLen; i++) {
+        int16[i] = Math.max(-32768, Math.min(32767, float32[Math.floor(i * ratio)] * 32768));
+      }
+      if (autoRecording) {
+        autoRecordChunks.push(int16);
+        const rms = Math.sqrt(float32.reduce((s,v) => s+v*v, 0) / float32.length);
+        waveform.querySelectorAll('.bar').forEach((b,i) => {
+          b.style.height = Math.min(36, Math.max(3, rms * 500 * (1 + Math.sin(i*0.5 + Date.now()*0.01)))) + 'px';
+        });
+        if (autoRecordChunks.length > 8) {
+          if (rms < 0.008) { if (!silenceTimer) silenceTimer = setTimeout(stopAutoRecord, 1500); }
+          else { if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; } }
+        }
+        return;
+      }
+      if (ws && ws.readyState === 1) {
+        const u8 = new Uint8Array(int16.buffer);
+        let bin = '';
+        for (let i = 0; i < u8.length; i += 8192) {
+          bin += String.fromCharCode(...u8.subarray(i, Math.min(i + 8192, u8.length)));
+        }
+        ws.send(JSON.stringify({ type: 'wake_audio', audio: btoa(bin) }));
+      }
+      chunkCount++;
+    };
+
+    wakeSourceNode.connect(wakeWorkletNode);
+    wakeWorkletNode.connect(wakeAudioCtx.destination);
+  } catch(err) {
+    addMsg('system', '⚠ Microphone access denied');
+    wakeToggle.checked = false;
+  }
+}
+
+function stopWakeStream() {
+  if (wakeWorkletNode) { wakeWorkletNode.disconnect(); wakeWorkletNode = null; }
+  if (wakeSourceNode) { wakeSourceNode.disconnect(); wakeSourceNode = null; }
+  if (wakeAudioCtx) { wakeAudioCtx.close(); wakeAudioCtx = null; }
+  if (wakeStream) { wakeStream.getTracks().forEach(t => t.stop()); wakeStream = null; }
+  autoRecording = false;
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+}
+
+// ── Conversation mode ──
+let autoRecordChunks = [];
+
+function enterConversationMode() {
+  conversationMode = true;
+  if (conversationTimer) clearTimeout(conversationTimer);
+  conversationTimer = setTimeout(exitConversationMode, CONVERSATION_TIMEOUT);
+  addMsg('system', '◈ Conversation mode active');
+}
+
+function exitConversationMode() {
+  conversationMode = false;
+  if (conversationTimer) { clearTimeout(conversationTimer); conversationTimer = null; }
+  addMsg('system', '◈ Conversation ended');
+  setStatus(wakeActive ? 'wake' : '', wakeActive ? 'Listening for wake word' : 'Systems Ready');
+}
+
+function resetConversationTimer() {
+  if (conversationMode) {
+    if (conversationTimer) clearTimeout(conversationTimer);
+    conversationTimer = setTimeout(exitConversationMode, CONVERSATION_TIMEOUT);
+  }
+}
+
+function startAutoRecord() {
+  if (autoRecording || isRecording) return;
+  autoRecording = true; isProcessing = false;
+  autoRecordChunks = [];
+  micBtn.classList.add('recording');
+  setStatus('listening', 'Listening');
+  setTimeout(() => { if (autoRecording && !silenceTimer) silenceTimer = setTimeout(stopAutoRecord, 1500); }, 2000);
+  setTimeout(() => { if (autoRecording) stopAutoRecord(); }, 10000);
+}
+
+function onWakeDetected() {
+  if (autoRecording) return;
+  addMsg('system', '◈ Wake word detected');
+  playBeep();
+  enterConversationMode();
+  startAutoRecord();
+}
+
+function stopAutoRecord() {
+  if (!autoRecording) return;
+  autoRecording = false;
+  micBtn.classList.remove('recording');
+  waveform.querySelectorAll('.bar').forEach(b => b.style.height = '3px');
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+  const total = autoRecordChunks.reduce((s,c) => s + c.length, 0);
+  if (total > 4000 && ws && ws.readyState === 1) {
+    isProcessing = true;
+    const combined = new Int16Array(total);
+    let off = 0;
+    for (const c of autoRecordChunks) { combined.set(c, off); off += c.length; }
+    const u8 = new Uint8Array(combined.buffer);
+    let bin = '';
+    for (let i = 0; i < u8.length; i += 8192) {
+      bin += String.fromCharCode(...u8.subarray(i, Math.min(i + 8192, u8.length)));
+    }
+    ws.send(JSON.stringify({ type: 'audio', audio: btoa(bin), sampleRate: 16000 }));
+    setTimeout(() => { isProcessing = false; }, 30000);
+  } else {
+    isProcessing = false;
+  }
+  autoRecordChunks = [];
+}
+
+// ── Wake toggle ──
+wakeToggle.addEventListener('change', () => {
+  if (wakeToggle.checked) {
+    startWakeStream();
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'wake_enable' }));
+  } else {
+    stopWakeStream();
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'wake_disable' }));
+    wakeIndicator.classList.remove('active');
+    wakeActive = false;
+    setStatus('', 'Systems Ready');
+  }
+});
+
+// ── Push-to-talk ──
+let pttStream = null, pttRecorder = null, pttBlobs = [];
+
+async function startPTT() {
+  if (isRecording || autoRecording) return;
+  isRecording = true;
+  micBtn.classList.add('recording');
+  setStatus('listening', 'Listening');
+  const stream = wakeStream || await navigator.mediaDevices.getUserMedia({ audio: true });
+  if (!wakeStream) pttStream = stream;
+  pttBlobs = [];
+  pttRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+  pttRecorder.ondataavailable = (ev) => { if (ev.data.size) pttBlobs.push(ev.data); };
+  pttRecorder.start(100);
+}
+
+async function stopPTT() {
+  if (!isRecording) return;
+  isRecording = false;
+  micBtn.classList.remove('recording');
+  if (pttRecorder && pttRecorder.state !== 'inactive') {
+    pttRecorder.stop();
+    await new Promise(r => { pttRecorder.onstop = r; });
+  }
+  if (pttStream) { pttStream.getTracks().forEach(t => t.stop()); pttStream = null; }
+  if (pttBlobs.length && ws && ws.readyState === 1) {
+    try {
+      const combined = new Blob(pttBlobs, { type: 'audio/webm;codecs=opus' });
+      const buf = await combined.arrayBuffer();
+      const ctx = new OfflineAudioContext(1, 480000, 16000);
+      const abuf = await ctx.decodeAudioData(buf);
+      const pcm = abuf.getChannelData(0);
+      const int16 = new Int16Array(pcm.length);
+      for (let i = 0; i < pcm.length; i++) {
+        int16[i] = Math.max(-32768, Math.min(32767, pcm[i] * 32768));
+      }
+      const u8 = new Uint8Array(int16.buffer);
+      let bin = '';
+      for (let i = 0; i < u8.length; i += 8192) {
+        bin += String.fromCharCode(...u8.subarray(i, Math.min(i + 8192, u8.length)));
+      }
+      ws.send(JSON.stringify({ type: 'audio', audio: btoa(bin), sampleRate: 16000 }));
+    } catch(e) { console.error('PTT decode error:', e); }
+  }
+  pttBlobs = [];
+  setStatus(wakeActive ? 'wake' : '', wakeActive ? 'Listening for wake word' : 'Systems Ready');
+}
+
+micBtn.addEventListener('mousedown', startPTT);
+micBtn.addEventListener('mouseup', stopPTT);
+micBtn.addEventListener('mouseleave', () => { if (isRecording) stopPTT(); });
+micBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startPTT(); });
+micBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopPTT(); });
+
+// ── Text input ──
+function sendText() {
+  const t = textInput.value.trim();
+  if (!t || !ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'text', text: t }));
+  textInput.value = '';
+}
+$('sendBtn').addEventListener('click', sendText);
+textInput.addEventListener('keypress', e => { if (e.key === 'Enter') sendText(); });
+
+// Space = PTT
+document.addEventListener('keydown', e => { if (e.code === 'Space' && document.activeElement !== textInput) { e.preventDefault(); startPTT(); } });
+document.addEventListener('keyup', e => { if (e.code === 'Space' && document.activeElement !== textInput) { e.preventDefault(); stopPTT(); } });
+
+// Collapse
+$('collapseBtn').addEventListener('click', () => {
+  $('chatPanel').classList.toggle('collapsed');
+  $('collapseBtn').textContent = $('chatPanel').classList.contains('collapsed') ? '‹' : '›';
+});
+
+// VNC
+const vncUrl = `${location.origin}/vnc/vnc.html?autoconnect=true&resize=scale&password=chhotu123&view_only=false`;
+document.getElementById('vnc-frame').src = vncUrl;
+setTimeout(connect, 300);
+</script>
+<script type="module">
+import '/static/face3d.js';
+setTimeout(() => {
+  const c = document.getElementById('faceContainer');
+  if (!c) return;
+  if (window.AsciiFace) {
+    try {
+      window._face3d = new AsciiFace(c, { width: c.clientWidth, height: c.clientHeight || 500 });
+      console.log('✅ Face initialized');
+    } catch(e) {
+      console.error('Face init failed:', e);
+      c.innerHTML = '<div style="color:#ff3366;font-size:12px;text-align:center;padding:20px;font-family:monospace;">WebGL not available<br>Try a different browser</div>';
+    }
+  } else {
+    console.error('AsciiFace class not loaded');
+    c.innerHTML = '<div style="color:#ff9f1c;font-size:12px;text-align:center;padding:20px;font-family:monospace;">Face module failed to load<br>Check console (F12)</div>';
+  }
+}, 200);
+</script>
+</body>
+</html>

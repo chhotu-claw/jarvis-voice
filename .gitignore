@@ -1,0 +1,23 @@
+# Venv
+lib/
+bin/
+include/
+pyvenv.cfg
+share/
+lib64
+
+# Models (too large for git)
+*.onnx
+*.bin
+voices/
+
+# Python
+__pycache__/
+*.pyc
+
+# Unused GLBs
+app/static/head.glb
+app/static/skull.glb
+app/static/mask.glb
+certs/
+jarvis_*
