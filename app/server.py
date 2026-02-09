@@ -6,9 +6,12 @@ Wake word detection: "hey jarvis" via openwakeword (browser streams audio contin
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import io
 import json
 import os
+import secrets
 import subprocess
 import tempfile
 import time
@@ -39,19 +42,73 @@ def get_api_key():
 
 API_KEY = get_api_key()
 
+# ── Session Token Auth ──────────────────────────────────────────────────
+PW_HASH = "450de2c07a277ecd67fbe4fe7c78dd88cab84811fa5796459e6651048d1f6841"
+TOKEN_SECRET = secrets.token_hex(32)  # rotates on restart
+active_tokens = {}  # token -> expiry timestamp
+
+def create_session_token(ttl=86400):
+    """Create a session token valid for ttl seconds (default 24h)."""
+    token = secrets.token_urlsafe(32)
+    active_tokens[token] = time.time() + ttl
+    return token
+
+def validate_token(token):
+    """Check if a session token is valid and not expired."""
+    if not token:
+        return False
+    exp = active_tokens.get(token)
+    if exp and time.time() < exp:
+        return True
+    active_tokens.pop(token, None)
+    return False
+
+def cleanup_expired_tokens():
+    """Remove expired tokens."""
+    now = time.time()
+    expired = [t for t, exp in active_tokens.items() if now >= exp]
+    for t in expired:
+        del active_tokens[t]
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    """Authenticate with password, receive session token."""
+    body = await request.json()
+    pw = body.get("password", "")
+    pw_hash = hashlib.sha256(pw.encode()).hexdigest()
+    if pw_hash == PW_HASH:
+        cleanup_expired_tokens()
+        token = create_session_token()
+        return {"ok": True, "token": token, "expiresIn": 86400}
+    return JSONResponse(status_code=401, content={"error": "Invalid password"})
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    """Check if current token is valid."""
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    return {"authenticated": validate_token(token)}
+
 @app.middleware("http")
 async def auth_middleware(request, call_next):
     path = request.url.path
-    # Skip auth for health, root, static, and non-API paths
-    if path in ("/api/health", "/") or path.startswith("/static"):
+    # Skip auth for health, root, static, auth endpoints
+    if path in ("/api/health", "/") or path.startswith("/static") or path.startswith("/api/auth/"):
         return await call_next(request)
     if not path.startswith("/api/"):
         return await call_next(request)
-    # Check API key
-    key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-    if key != API_KEY:
-        return JSONResponse(status_code=401, content={"error": "Invalid API key"})
-    return await call_next(request)
+    # Check API key OR session token
+    api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if api_key == API_KEY:
+        return await call_next(request)
+    # Check Bearer token
+    bearer = request.headers.get("Authorization", "").replace("Bearer ", "")
+    if validate_token(bearer):
+        return await call_next(request)
+    # Check token in query param (for WebSocket-like scenarios)
+    qt = request.query_params.get("token")
+    if validate_token(qt):
+        return await call_next(request)
+    return JSONResponse(status_code=401, content={"error": "Not authenticated"})
 
 # ── CORS ────────────────────────────────────────────────────────────────
 app.add_middleware(
@@ -743,10 +800,11 @@ async def agent_sessions():
 
 @app.websocket("/ws/agent/stream")
 async def agent_stream(ws: WebSocket):
-    # Check API key in query
+    # Check API key or session token in query
     api_key = ws.query_params.get("api_key")
-    if api_key != API_KEY:
-        await ws.close(code=4001, reason="Invalid API key")
+    token = ws.query_params.get("token")
+    if api_key != API_KEY and not validate_token(token):
+        await ws.close(code=4001, reason="Not authenticated")
         return
 
     await ws.accept()
