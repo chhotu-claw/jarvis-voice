@@ -12,6 +12,7 @@ import os
 import subprocess
 import tempfile
 import time
+import uuid
 import wave
 from pathlib import Path
 
@@ -20,11 +21,46 @@ import yaml
 import numpy as np
 import httpx
 import websockets
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Chhotu Voice Assistant")
+
+# ── API Key Auth ────────────────────────────────────────────────────────
+def get_api_key():
+    try:
+        result = subprocess.run(["pass", "gateway/api-key"], capture_output=True, text=True, timeout=5)
+        return result.stdout.strip()
+    except Exception:
+        print("⚠️ Failed to load API key from pass")
+        return None
+
+API_KEY = get_api_key()
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    path = request.url.path
+    # Skip auth for health, root, static, and non-API paths
+    if path in ("/api/health", "/") or path.startswith("/static"):
+        return await call_next(request)
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    # Check API key
+    key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if key != API_KEY:
+        return JSONResponse(status_code=401, content={"error": "Invalid API key"})
+    return await call_next(request)
+
+# ── CORS ────────────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"https://.*\.chhotu\.online|http://localhost:\d+|http://192\.168\.\d+\.\d+:\d+",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── Config ──────────────────────────────────────────────────────────────
 OLLAMA_URL = "http://localhost:11434"
@@ -542,7 +578,6 @@ async def health():
     }
 
 # ── VNC Proxy ───────────────────────────────────────────────────────────
-from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 from starlette.websockets import WebSocket as StarletteWebSocket
 import websockets as ws_lib
@@ -642,6 +677,157 @@ async def gateway_ws_proxy(client: WebSocket):
             await client.close()
         except:
             pass
+
+# ── Agent API Endpoints ──────────────────────────────────────────────────
+GW_URL = "ws://127.0.0.1:18789"
+GW_TOKEN = OPENCLAW_TOKEN
+
+@app.post("/api/agent/chat")
+async def agent_chat(request: Request):
+    body = await request.json()
+    message = body.get("message", "")
+    session = body.get("session", "api")
+    session_key = f"agent:main:{session}"
+
+    async with websockets.connect(GW_URL) as ws:
+        # Wait for challenge
+        raw = await ws.recv()
+
+        # Connect
+        await ws.send(json.dumps({
+            "type": "req", "id": str(uuid.uuid4()),
+            "method": "connect",
+            "params": {
+                "token": GW_TOKEN,
+                "client": {"id": f"api-{session}", "name": "API Client"},
+                "sessionKey": session_key
+            }
+        }))
+        raw = await ws.recv()
+
+        # Send chat message
+        msg_id = str(uuid.uuid4())
+        await ws.send(json.dumps({
+            "type": "req", "id": msg_id,
+            "method": "chat.send",
+            "params": {"text": message}
+        }))
+
+        # Collect response
+        full_response = ""
+        while True:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=120)
+                data = json.loads(raw)
+                if data.get("type") == "event":
+                    evt = data.get("event", "")
+                    if evt == "chat.token":
+                        full_response += data.get("params", {}).get("token", "")
+                    elif evt == "chat.response":
+                        full_response = data.get("params", {}).get("text", full_response)
+                        break
+                    elif evt == "chat.error":
+                        return {"error": data.get("params", {}).get("message", "Unknown error")}
+            except asyncio.TimeoutError:
+                break
+
+        return {"response": full_response, "session": session_key}
+
+@app.get("/api/agent/sessions")
+async def agent_sessions():
+    sessions_file = os.path.expanduser("~/.openclaw/agents/main/sessions/sessions.json")
+    if os.path.exists(sessions_file):
+        with open(sessions_file) as f:
+            return json.load(f)
+    return {}
+
+@app.websocket("/ws/agent/stream")
+async def agent_stream(ws: WebSocket):
+    # Check API key in query
+    api_key = ws.query_params.get("api_key")
+    if api_key != API_KEY:
+        await ws.close(code=4001, reason="Invalid API key")
+        return
+
+    await ws.accept()
+
+    try:
+        while True:
+            data = json.loads(await ws.receive_text())
+            message = data.get("message", "")
+            session = data.get("session", "api")
+            session_key = f"agent:main:{session}"
+
+            async with websockets.connect(GW_URL) as gw:
+                raw = await gw.recv()  # challenge
+
+                await gw.send(json.dumps({
+                    "type": "req", "id": str(uuid.uuid4()),
+                    "method": "connect",
+                    "params": {
+                        "token": GW_TOKEN,
+                        "client": {"id": f"api-stream-{session}", "name": "API Stream"},
+                        "sessionKey": session_key
+                    }
+                }))
+                await gw.recv()
+
+                await gw.send(json.dumps({
+                    "type": "req", "id": str(uuid.uuid4()),
+                    "method": "chat.send",
+                    "params": {"text": message}
+                }))
+
+                while True:
+                    try:
+                        raw = await asyncio.wait_for(gw.recv(), timeout=120)
+                        evt = json.loads(raw)
+                        if evt.get("type") == "event":
+                            e = evt.get("event", "")
+                            if e == "chat.token":
+                                await ws.send_json({"type": "token", "text": evt["params"]["token"]})
+                            elif e == "chat.response":
+                                await ws.send_json({"type": "done", "text": evt["params"].get("text", "")})
+                                break
+                            elif e == "chat.error":
+                                await ws.send_json({"type": "error", "text": evt["params"].get("message", "")})
+                                break
+                    except asyncio.TimeoutError:
+                        await ws.send_json({"type": "error", "text": "Timeout"})
+                        break
+    except Exception:
+        pass
+
+# ── Desktop API Endpoints ────────────────────────────────────────────────
+@app.get("/api/desktop/screenshot")
+async def desktop_screenshot():
+    """Take a screenshot of the VNC display and return as base64 PNG."""
+    try:
+        result = subprocess.run(
+            ["import", "-display", ":1", "-window", "root", "png:-"],
+            capture_output=True, timeout=10
+        )
+        if result.returncode == 0:
+            b64 = base64.b64encode(result.stdout).decode()
+            return {"image": b64, "format": "png"}
+        return {"error": "Screenshot failed"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/desktop/url")
+async def desktop_open_url(request: Request):
+    """Open a URL in Brave browser on the VNC display."""
+    body = await request.json()
+    url = body.get("url", "")
+    if not url:
+        return {"error": "No URL provided"}
+    env = os.environ.copy()
+    env["DISPLAY"] = ":1"
+    subprocess.Popen(
+        ["brave-browser", "--no-sandbox", url],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    return {"ok": True, "url": url}
 
 # ── Serve frontend ──────────────────────────────────────────────────────
 STATIC_DIR = Path(__file__).parent / "static"
