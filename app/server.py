@@ -92,7 +92,7 @@ async def auth_status(request: Request):
 async def auth_middleware(request, call_next):
     path = request.url.path
     # Skip auth for health, root, static, auth endpoints
-    if path in ("/api/health", "/") or path.startswith("/static") or path.startswith("/api/auth/"):
+    if path in ("/api/health", "/api/webhook/deploy") or path.startswith("/api/auth/") or not path.startswith("/api/") and not path.startswith("/ws/"):
         return await call_next(request)
     if not path.startswith("/api/"):
         return await call_next(request)
@@ -125,7 +125,33 @@ OLLAMA_MODEL = "llama3.1:8b"
 PIPER_MODEL = str(Path.home() / "chhotu-voice/voices/voice.onnx")
 MEMORY_DIR = str(Path.home() / ".openclaw/workspace")
 WHISPER_MODEL = "small.en"
-WAKE_WORDS = ["hey chhotu", "hey jarvis", "he chhotu", "a chhotu", "hey chotu", "hey jhottu"]
+WAKE_WORDS = ["listen agent", "listen up agent", "hey agent", "okay agent", "ok agent"]
+STOP_WORDS = ["stop listening", "stop listen", "stop agent", "go to sleep"]
+
+import re
+def normalize_for_wake(text):
+    """Strip punctuation and extra spaces for wake word matching."""
+    return re.sub(r'[^a-z0-9 ]', '', text.lower()).strip()
+    
+def check_wake_word(text):
+    normalized = normalize_for_wake(text)
+    for w in WAKE_WORDS:
+        if w in normalized:
+            return True
+    # Also check without spaces between "hey" and the name
+    collapsed = normalized.replace(" ", "")
+    for w in WAKE_WORDS:
+        if w.replace(" ", "") in collapsed:
+            return True
+    return False
+
+def check_stop_word(text):
+    normalized = normalize_for_wake(text)
+    for w in STOP_WORDS:
+        if w in normalized:
+            return True
+    return False
+
 EDGE_TTS_VOICE = "en-US-GuyNeural"  # fallback
 KOKORO_MODEL = str(Path.home() / "chhotu-voice/kokoro-v1.0.onnx")
 KOKORO_VOICES = str(Path.home() / "chhotu-voice/voices-v1.0.bin")
@@ -383,16 +409,23 @@ async def route_to_claude(task: str) -> str:
         return "Sorry, couldn't reach my backend."
 
 # ── Process voice command (shared logic) ────────────────────────────────
-async def stream_tts_to_ws(ws, text: str):
-    """Stream TTS audio chunks over websocket as they're generated."""
+async def stream_tts_to_ws(ws, text: str, response_text: str = None, routed: bool = False, route_task: str = None):
+    """Stream TTS audio chunks over websocket as they're generated.
+    First chunk includes response_text so client can display text + play audio together."""
     chunk_count = 0
     async for i, wav_bytes in synthesize_speech_stream(text):
-        await ws.send_json({
+        msg = {
             "type": "audio_chunk",
             "chunk": i,
             "audio": base64.b64encode(wav_bytes).decode(),
             "format": "wav",
-        })
+        }
+        if i == 0 and response_text:
+            msg["text"] = response_text
+            msg["routed"] = routed
+            if route_task:
+                msg["routeTask"] = route_task
+        await ws.send_json(msg)
         chunk_count += 1
     await ws.send_json({"type": "audio_end", "chunks": chunk_count})
 
@@ -411,16 +444,12 @@ async def process_voice(ws: WebSocket, audio_bytes: bytes, sample_rate: int = 16
     await ws.send_json({"type": "status", "status": "thinking"})
     result = await chat_local(text)
     
-    await ws.send_json({
-        "type": "response",
-        "text": result["text"],
-        "routed": result["routed"],
-        "routeTask": result.get("route_task"),
-    })
-    
-    # Speak the initial response (streamed)
+    # Send text + audio together (text arrives with first audio chunk)
     await ws.send_json({"type": "status", "status": "speaking"})
-    await stream_tts_to_ws(ws, result["text"])
+    await stream_tts_to_ws(ws, result["text"],
+                           response_text=result["text"],
+                           routed=result["routed"],
+                           route_task=result.get("route_task"))
     
     # If routed, forward to Claude and speak the result
     if result["routed"] and result.get("route_task"):
@@ -430,14 +459,8 @@ async def process_voice(ws: WebSocket, audio_bytes: bytes, sample_rate: int = 16
         # Add Claude's reply to conversation history so Llama has context
         conversation_history.append({"role": "assistant", "content": f"[Backend result]: {claude_reply}"})
         
-        await ws.send_json({
-            "type": "response",
-            "text": claude_reply,
-            "routed": True,
-        })
-        
         await ws.send_json({"type": "status", "status": "speaking"})
-        await stream_tts_to_ws(ws, claude_reply)
+        await stream_tts_to_ws(ws, claude_reply, response_text=claude_reply, routed=True)
     
     await ws.send_json({"type": "status", "status": "idle"})
 
@@ -448,21 +471,6 @@ async def voice_ws(ws: WebSocket):
     print("🐣 Voice client connected")
     
     conversation_mode = False
-    conversation_timer = None
-    
-    async def reset_conversation_timer():
-        nonlocal conversation_mode, conversation_timer
-        if conversation_timer:
-            conversation_timer.cancel()
-        async def timeout():
-            nonlocal conversation_mode
-            await asyncio.sleep(30)
-            conversation_mode = False
-            try:
-                await ws.send_json({"type": "conversation_end"})
-            except Exception:
-                pass
-        conversation_timer = asyncio.create_task(timeout())
     
     try:
         while True:
@@ -483,15 +491,22 @@ async def voice_ws(ws: WebSocket):
                         
                         if not text or len(text.strip()) < 2:
                             print(f"🔇 Empty/short transcript, skipping")
+                            await ws.send_json({"type": "status", "status": "idle", "transcript": text or ""})
                             continue
                         
                         print(f"📝 VAD transcript: {text}")
                         text_lower = text.lower().strip()
-                        is_wake = any(w in text_lower for w in WAKE_WORDS)
+                        # Check for stop word first
+                        if conversation_mode and check_stop_word(text):
+                            conversation_mode = False
+                            await ws.send_json({"type": "conversation_end"})
+                            print(f"🛑 Stop word detected: {text}")
+                            continue
+                        
+                        is_wake = check_wake_word(text)
                         
                         if is_wake and not conversation_mode:
                             conversation_mode = True
-                            await reset_conversation_timer()
                             await ws.send_json({"type": "wake_detected", "text": text})
                             print(f"🎯 Wake word detected in: {text}")
                             # Strip wake word from text
@@ -503,13 +518,13 @@ async def voice_ws(ws: WebSocket):
                             continue
                         
                         if conversation_mode:
-                            await reset_conversation_timer()
                             await ws.send_json({"type": "transcript", "text": text})
                             await process_voice(ws, None, text=text)
                             continue
                         
                         # Not in conversation mode and no wake word — ignore
                         print(f"🔇 Ignoring (no wake word, not in conversation): {text}")
+                        await ws.send_json({"type": "status", "status": "idle", "transcript": text})
                         continue
                     
                     # Legacy: could be raw binary from old PTT — ignore or handle
@@ -535,9 +550,6 @@ async def voice_ws(ws: WebSocket):
                     
                     elif msg_type == "wake_disable":
                         conversation_mode = False
-                        if conversation_timer:
-                            conversation_timer.cancel()
-                            conversation_timer = None
                         await ws.send_json({"type": "wake_status", "enabled": False})
                         print("🎯 Wake word detection DISABLED")
                     
@@ -577,8 +589,7 @@ async def voice_ws(ws: WebSocket):
     except WebSocketDisconnect:
         print("🐣 Voice client disconnected")
     finally:
-        if conversation_timer:
-            conversation_timer.cancel()
+        pass
 
 # ── Service Management ───────────────────────────────────────────────────
 def load_services():
@@ -656,6 +667,53 @@ async def health():
         "whisper": WHISPER_MODEL,
         "piper": os.path.exists(PIPER_MODEL),
     }
+
+# ── GitHub Webhook Deploy ────────────────────────────────────────────────
+
+WEBHOOK_SECRET = None
+def _get_webhook_secret():
+    global WEBHOOK_SECRET
+    if WEBHOOK_SECRET is None:
+        try:
+            WEBHOOK_SECRET = subprocess.check_output(["pass", "github/webhook-secret"], text=True).strip()
+        except Exception:
+            WEBHOOK_SECRET = ""
+    return WEBHOOK_SECRET
+
+DEPLOY_MAP = {
+    "chhotu-app": "chhotu-app",
+    "vault": "vault",
+}
+
+@app.post("/api/webhook/deploy")
+async def webhook_deploy(request: Request):
+    """GitHub push webhook — deploys static sites."""
+    body = await request.body()
+    sig_header = request.headers.get("x-hub-signature-256", "")
+    secret = _get_webhook_secret()
+    if secret:
+        expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig_header, expected):
+            return JSONResponse({"error": "bad signature"}, status_code=403)
+
+    payload = json.loads(body)
+    repo_name = payload.get("repository", {}).get("name", "")
+    if repo_name not in DEPLOY_MAP:
+        return {"status": "ignored", "repo": repo_name}
+
+    # Run deploy in background
+    proc = await asyncio.create_subprocess_exec(
+        "/home/edemon/bin/deploy-site.sh", DEPLOY_MAP[repo_name],
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode == 0:
+        return {"status": "deployed", "repo": repo_name, "output": stdout.decode().strip()}
+    else:
+        return JSONResponse(
+            {"status": "error", "repo": repo_name, "error": stderr.decode().strip()},
+            status_code=500
+        )
 
 # ── VNC Proxy ───────────────────────────────────────────────────────────
 from starlette.responses import Response, StreamingResponse
@@ -910,14 +968,10 @@ async def desktop_open_url(request: Request):
     )
     return {"ok": True, "url": url}
 
-# ── Serve frontend ──────────────────────────────────────────────────────
-STATIC_DIR = Path(__file__).parent / "static"
+# ── Serve frontend (from /srv/app/ — single source of truth) ────────────
+STATIC_DIR = Path("/srv/app")
 if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-@app.get("/")
-async def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
