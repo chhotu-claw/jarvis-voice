@@ -15,8 +15,11 @@ import time
 import wave
 from pathlib import Path
 
+import yaml
+
 import numpy as np
 import httpx
+import websockets
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -461,6 +464,73 @@ async def voice_ws(ws: WebSocket):
     except WebSocketDisconnect:
         print("🐣 Voice client disconnected")
 
+# ── Service Management ───────────────────────────────────────────────────
+def load_services():
+    with open(os.path.expanduser("~/service-manager/services.yaml")) as f:
+        return yaml.safe_load(f).get("services", {})
+
+def get_systemd_status(unit):
+    try:
+        result = subprocess.run(["systemctl", "--user", "is-active", unit],
+                                capture_output=True, text=True, timeout=5)
+        return result.stdout.strip()
+    except:
+        return "unknown"
+
+def get_service_logs(unit, lines=100):
+    try:
+        result = subprocess.run(
+            ["journalctl", "--user", "-u", unit, "-n", str(lines), "--no-pager"],
+            capture_output=True, text=True, timeout=5)
+        return result.stdout
+    except:
+        return "Failed to get logs"
+
+def service_action(unit, action):
+    cmd = {"start": "start", "stop": "stop", "restart": "restart"}[action]
+    subprocess.run(["systemctl", "--user", cmd, unit], timeout=10)
+
+@app.get("/api/services")
+async def list_services():
+    services = load_services()
+    result = {}
+    for sid, svc in services.items():
+        status = get_systemd_status(svc["systemd"]) if svc.get("systemd") else "manual"
+        result[sid] = {**svc, "id": sid, "systemdStatus": status}
+    return result
+
+@app.post("/api/services/{service_id}/{action}")
+async def control_service(service_id: str, action: str):
+    services = load_services()
+    svc = services.get(service_id)
+    if not svc or not svc.get("systemd"):
+        return {"error": "Not found or no systemd unit"}
+    if action not in ("start", "stop", "restart"):
+        return {"error": "Invalid action"}
+    await asyncio.to_thread(service_action, svc["systemd"], action)
+    await asyncio.sleep(1)
+    new_status = await asyncio.to_thread(get_systemd_status, svc["systemd"])
+    return {"ok": True, "status": new_status}
+
+@app.get("/api/services/{service_id}/logs")
+async def service_logs(service_id: str, lines: int = 100):
+    services = load_services()
+    svc = services.get(service_id)
+    if not svc or not svc.get("systemd"):
+        return {"error": "No systemd unit"}
+    logs = await asyncio.to_thread(get_service_logs, svc["systemd"], lines)
+    return {"logs": logs}
+
+@app.get("/api/tunnel")
+async def tunnel_status():
+    try:
+        status = subprocess.run(["systemctl", "--user", "is-active", "cloudflare-tunnel.service"],
+                                capture_output=True, text=True, timeout=5).stdout.strip()
+        url = open("/tmp/tunnel-url.txt").read().strip() if os.path.exists("/tmp/tunnel-url.txt") else None
+        return {"status": status, "url": url}
+    except:
+        return {"status": "unknown", "url": None}
+
 # ── Health check ────────────────────────────────────────────────────────
 @app.get("/api/health")
 async def health():
@@ -538,6 +608,41 @@ async def vnc_ws_proxy(ws: WebSocket):
 async def vnc_ws_proxy_root(ws: WebSocket):
     await _proxy_vnc_ws(ws)
 
+# ── Gateway WS Proxy ────────────────────────────────────────────────────
+@app.websocket("/ws/gateway")
+async def gateway_ws_proxy(client: WebSocket):
+    """Proxy WebSocket to OpenClaw gateway on localhost:18789."""
+    await client.accept()
+    try:
+        async with websockets.connect(
+            "ws://127.0.0.1:18789",
+            origin="http://127.0.0.1:18789",
+            additional_headers={"Host": "127.0.0.1:18789"}
+        ) as gw:
+            async def client_to_gw():
+                try:
+                    while True:
+                        data = await client.receive_text()
+                        await gw.send(data)
+                except WebSocketDisconnect:
+                    pass
+
+            async def gw_to_client():
+                try:
+                    async for msg in gw:
+                        await client.send_text(msg)
+                except Exception:
+                    pass
+
+            await asyncio.gather(client_to_gw(), gw_to_client())
+    except Exception as e:
+        print(f"Gateway proxy error: {e}")
+    finally:
+        try:
+            await client.close()
+        except:
+            pass
+
 # ── Serve frontend ──────────────────────────────────────────────────────
 STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():
@@ -549,6 +654,4 @@ async def index():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080,
-                ssl_keyfile=str(Path.home() / "chhotu-voice/certs/key.pem"),
-                ssl_certfile=str(Path.home() / "chhotu-voice/certs/cert.pem"))
+    uvicorn.run(app, host="0.0.0.0", port=8080)

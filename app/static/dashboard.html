@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenClaw Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0e17;--bg2:#0f1623;--bg3:#151d2e;--border:#1a2744;--cyan:#00e5ff;--cyan2:#00b8d4;--cyan-dim:rgba(0,229,255,.15);--text:#e0e6f0;--text2:#8899bb;--user-bg:#1a2744;--asst-bg:#0d1520;--error:#ff4466;--success:#00e676;--font-mono:'JetBrains Mono',monospace;--font-ui:'Inter','Segoe UI',system-ui,sans-serif;--font-title:'Orbitron',sans-serif}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-ui);overflow:hidden}
+
+#topbar{height:48px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 12px;gap:10px;z-index:10}
+#topbar h1{font-family:var(--font-title);font-size:13px;letter-spacing:2px;color:var(--cyan);text-transform:uppercase;white-space:nowrap}
+#conn-status{width:10px;height:10px;border-radius:50%;background:#555;flex-shrink:0;transition:background .3s}
+#conn-status.connected{background:var(--success);box-shadow:0 0 8px var(--success)}
+#conn-status.connecting{background:#ffab00;box-shadow:0 0 8px #ffab00;animation:pulse 1s infinite}
+#conn-status.error{background:var(--error);box-shadow:0 0 8px var(--error)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+#conn-label{font-size:12px;color:var(--text2);white-space:nowrap}
+
+.layout-bar{display:flex;gap:4px;margin-left:12px}
+.layout-btn{background:none;border:1px solid var(--border);color:var(--text2);padding:4px 10px;border-radius:4px;cursor:pointer;font-family:var(--font-ui);font-size:11px;white-space:nowrap;transition:all .2s}
+.layout-btn:hover{border-color:var(--cyan);color:var(--cyan)}
+.layout-btn.active{background:var(--cyan-dim);border-color:var(--cyan);color:var(--cyan)}
+
+.spacer{flex:1}
+.topbar-btn{background:none;border:1px solid var(--border);color:var(--text2);padding:4px 10px;border-radius:4px;cursor:pointer;font-family:var(--font-ui);font-size:11px}
+.topbar-btn:hover{border-color:var(--cyan);color:var(--cyan)}
+
+/* Token modal */
+#token-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center}
+#token-modal.show{display:flex}
+#token-modal .modal{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:24px;width:420px;max-width:90vw}
+#token-modal h2{font-family:var(--font-title);font-size:14px;color:var(--cyan);margin-bottom:12px}
+#token-modal input{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:4px;font-family:var(--font-mono);font-size:12px;margin-bottom:12px}
+#token-modal .btns{display:flex;gap:8px;justify-content:flex-end}
+#token-modal button{padding:6px 16px;border-radius:4px;cursor:pointer;font-family:var(--font-ui);font-size:13px;border:none}
+#token-save{background:var(--cyan);color:var(--bg)}
+#token-cancel{background:var(--bg3);color:var(--text2)}
+
+/* Grid */
+#grid{height:calc(100vh - 48px);background:var(--border);display:grid;gap:1px}
+
+/* Layout presets */
+#grid.layout-4chat{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+#grid.layout-2chat-vnc{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+#grid.layout-2chat-vnc .pane:nth-child(3){grid-column:2;grid-row:1/3}
+#grid.layout-1chat-vnc-h{grid-template-columns:1fr 1fr;grid-template-rows:1fr}
+#grid.layout-1chat-vnc-v{grid-template-columns:1fr;grid-template-rows:1fr 1fr}
+#grid.layout-vnc-full{grid-template-columns:1fr;grid-template-rows:1fr}
+#grid.layout-1chat{grid-template-columns:1fr;grid-template-rows:1fr}
+
+/* Pane */
+.pane{background:var(--bg2);display:flex;flex-direction:column;overflow:hidden;min-width:0;min-height:0}
+.pane.hidden{display:none}
+.pane-header{height:36px;background:var(--bg3);border-bottom:2px solid var(--pane-accent-border, var(--border));display:flex;align-items:center;padding:0 10px;gap:6px;flex-shrink:0}
+.pane-header select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:4px;font-family:var(--font-ui);font-size:12px;max-width:200px;cursor:pointer}
+.pane-header select:focus{border-color:var(--cyan);outline:none}
+.pane-label{font-family:var(--font-title);font-size:10px;color:var(--pane-accent, var(--cyan));letter-spacing:1px;white-space:nowrap}
+.pane-type-btn{background:none;border:1px solid var(--border);color:var(--text2);padding:1px 6px;border-radius:3px;cursor:pointer;font-size:10px;font-family:var(--font-ui)}
+.pane-type-btn:hover{border-color:var(--cyan);color:var(--cyan)}
+
+/* Chat area */
+.chat-messages{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;scroll-behavior:smooth}
+.chat-messages::-webkit-scrollbar{width:6px}
+.chat-messages::-webkit-scrollbar-track{background:transparent}
+.chat-messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+.msg{padding:8px 12px;border-radius:8px;max-width:88%;font-size:14px;line-height:1.6;word-wrap:break-word;overflow-wrap:break-word}
+.msg.user{background:var(--pane-user-bg, var(--user-bg));align-self:flex-end;border-bottom-right-radius:2px}
+.msg.assistant{background:var(--asst-bg);align-self:flex-start;border-bottom-left-radius:2px;border:1px solid var(--border)}
+.msg.assistant pre{background:var(--bg);padding:8px 10px;border-radius:4px;overflow-x:auto;margin:6px 0;font-family:var(--font-mono);font-size:12px;border:1px solid var(--border)}
+.msg.assistant code{font-family:var(--font-mono);font-size:12px;background:var(--bg);padding:1px 4px;border-radius:3px}
+.msg.assistant pre code{background:none;padding:0}
+.msg.assistant a{color:var(--cyan)}
+.msg.assistant strong{color:var(--cyan2)}
+.msg-time{font-size:10px;color:var(--text2);margin-top:4px}
+
+.streaming-indicator{display:flex;align-items:center;gap:6px;padding:4px 12px;font-size:12px;color:var(--cyan);align-self:flex-start}
+.streaming-indicator .dots span{animation:blink 1.4s infinite;font-size:18px}
+.streaming-indicator .dots span:nth-child(2){animation-delay:.2s}
+.streaming-indicator .dots span:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+
+.chat-input{display:flex;gap:6px;padding:8px 10px;border-top:1px solid var(--border);background:var(--bg3);flex-shrink:0}
+.chat-input textarea{flex:1;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-family:var(--font-ui);font-size:14px;resize:none;height:38px;max-height:100px;line-height:1.4}
+.chat-input textarea:focus{outline:none;border-color:var(--pane-accent, var(--cyan))}
+.chat-input button{width:38px;height:38px;border:none;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.btn-send{background:var(--cyan);color:var(--bg)}
+.btn-stop{background:var(--error);color:#fff;display:none}
+.btn-stop.show{display:flex}
+.btn-send.hide{display:none}
+
+.vnc-frame{flex:1;border:none;width:100%;height:100%}
+
+/* Attachments */
+.attach-bar{display:flex;gap:6px;padding:4px 10px 0;flex-wrap:wrap;align-items:center}
+.attach-thumb{position:relative;width:48px;height:48px;border-radius:6px;overflow:hidden;border:1px solid var(--border)}
+.attach-thumb img{width:100%;height:100%;object-fit:cover}
+.attach-thumb .remove{position:absolute;top:-2px;right:-2px;width:18px;height:18px;border-radius:50%;background:var(--error);color:#fff;border:none;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;line-height:1}
+.btn-attach{width:38px;height:38px;border:1px solid var(--border);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:none;color:var(--text2);font-size:18px}
+.btn-attach:hover{border-color:var(--cyan);color:var(--cyan)}
+.msg img.msg-img{max-width:100%;max-height:300px;border-radius:6px;margin:4px 0;cursor:pointer}
+</style>
+</head>
+<body>
+
+<!-- Password gate for remote access -->
+<div id="auth-gate" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:200;display:flex;align-items:center;justify-content:center">
+  <div style="text-align:center">
+    <h1 style="font-family:var(--font-title);color:var(--cyan);font-size:18px;margin-bottom:20px">🐣 OpenClaw Dashboard</h1>
+    <input id="auth-pw" type="password" placeholder="Enter password" style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:10px 16px;border-radius:6px;font-size:14px;width:260px;font-family:var(--font-ui)" onkeydown="if(event.key==='Enter')checkAuth()">
+    <br><button onclick="checkAuth()" style="margin-top:12px;background:var(--cyan);color:var(--bg);border:none;padding:8px 24px;border-radius:6px;cursor:pointer;font-family:var(--font-ui);font-size:14px">Enter</button>
+    <div id="auth-err" style="color:var(--error);font-size:12px;margin-top:8px"></div>
+  </div>
+</div>
+
+<div id="topbar">
+  <h1>OpenClaw</h1>
+  <div id="conn-status"></div>
+  <span id="conn-label">Disconnected</span>
+  <div class="layout-bar">
+    <button class="layout-btn active" data-layout="4chat" title="4 Chat Panes">▦ 4 Chat</button>
+    <button class="layout-btn" data-layout="2chat-vnc" title="2 Chat + VNC">◧ 2+VNC</button>
+    <button class="layout-btn" data-layout="1chat-vnc-h" title="Chat + VNC Side by Side">◫ Chat|VNC</button>
+    <button class="layout-btn" data-layout="1chat-vnc-v" title="Chat + VNC Stacked">⬒ Chat/VNC</button>
+    <button class="layout-btn" data-layout="vnc-full" title="Full VNC">🖥 VNC</button>
+    <button class="layout-btn" data-layout="1chat" title="Single Chat Full">💬 Chat</button>
+  </div>
+  <div class="spacer"></div>
+  <button class="topbar-btn" onclick="showTokenModal()">⚙ Token</button>
+</div>
+
+<div id="token-modal">
+  <div class="modal">
+    <h2>Gateway Token</h2>
+    <input id="token-input" type="password" placeholder="Enter gateway token" spellcheck="false">
+    <div class="btns">
+      <button id="token-cancel" onclick="hideTokenModal()">Cancel</button>
+      <button id="token-save" onclick="saveToken()">Save & Reconnect</button>
+    </div>
+  </div>
+</div>
+
+<div id="grid" class="layout-4chat">
+  <div class="pane" id="pane-0"></div>
+  <div class="pane" id="pane-1"></div>
+  <div class="pane" id="pane-2"></div>
+  <div class="pane" id="pane-3"></div>
+</div>
+
+<script>
+// Simple password gate for remote access
+const DASHBOARD_PW_HASH = '450de2c07a277ecd67fbe4fe7c78dd88cab84811fa5796459e6651048d1f6841'; // sha256 of dashboard password
+async function sha256(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+function checkAuthGate() {
+  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname.startsWith('192.168.');
+  const gate = document.getElementById('auth-gate');
+  if (isLocal || sessionStorage.getItem('oc_auth') === '1') {
+    gate.style.display = 'none';
+    return true;
+  }
+  gate.style.display = 'flex';
+  document.getElementById('auth-pw').focus();
+  return false;
+}
+async function checkAuth() {
+  const pw = document.getElementById('auth-pw').value;
+  const hash = await sha256(pw);
+  if (hash === DASHBOARD_PW_HASH) {
+    sessionStorage.setItem('oc_auth', '1');
+    document.getElementById('auth-gate').style.display = 'none';
+    connect();
+  } else {
+    document.getElementById('auth-err').textContent = 'Wrong password';
+  }
+}
+
+const DEFAULT_TOKEN = '1f25ead148b815f60be7a33515ec38f44ff0355fb1c85cff';
+// Use direct gateway WS on LAN, proxy through voice server when remote
+const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname.startsWith('192.168.');
+const GW_URL = isLocal ? `ws://${location.hostname}:18789` : `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/gateway`;
+const VNC_URL = isLocal
+  ? `http://${location.hostname}:6080/vnc.html?autoconnect=true&resize=remote&password=chhotu123`
+  : `${location.origin}/vnc/vnc.html?autoconnect=true&resize=remote&password=chhotu123`;
+
+if (!localStorage.getItem('oc_token')) localStorage.setItem('oc_token', DEFAULT_TOKEN);
+
+let ws = null, msgId = 0, connected = false;
+const pending = {};
+let sessions = [];
+
+// Pane configs: each pane can be 'chat' or 'vnc'
+const panes = [
+  { idx: 0, type: 'chat', sessionKey: null, messages: [], streaming: false, streamText: '', runId: null, attachments: [] },
+  { idx: 1, type: 'chat', sessionKey: null, messages: [], streaming: false, streamText: '', runId: null, attachments: [] },
+  { idx: 2, type: 'chat', sessionKey: null, messages: [], streaming: false, streamText: '', runId: null, attachments: [] },
+  { idx: 3, type: 'chat', sessionKey: null, messages: [], streaming: false, streamText: '', runId: null, attachments: [] },
+];
+
+// Layout definitions: which panes are visible and what type they are forced to
+const layouts = {
+  '4chat':       { visible: [0,1,2,3], force: {} },
+  '2chat-vnc':   { visible: [0,1,2],   force: { 2: 'vnc' } },
+  '1chat-vnc-h': { visible: [0,1],     force: { 1: 'vnc' } },
+  '1chat-vnc-v': { visible: [0,1],     force: { 1: 'vnc' } },
+  'vnc-full':    { visible: [0],       force: { 0: 'vnc' } },
+  '1chat':       { visible: [0],       force: {} },
+};
+
+let currentLayout = localStorage.getItem('oc_layout') || '4chat';
+
+// Layout switching
+document.querySelectorAll('.layout-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    currentLayout = btn.dataset.layout;
+    localStorage.setItem('oc_layout', currentLayout);
+    applyLayout();
+  });
+});
+
+function applyLayout() {
+  const grid = document.getElementById('grid');
+  grid.className = 'layout-' + currentLayout;
+  const layout = layouts[currentLayout];
+
+  document.querySelectorAll('.layout-btn').forEach(b => b.classList.toggle('active', b.dataset.layout === currentLayout));
+
+  // Show/hide panes
+  for (let i = 0; i < 4; i++) {
+    const el = document.getElementById(`pane-${i}`);
+    if (layout.visible.includes(i)) {
+      el.classList.remove('hidden');
+      const forcedType = layout.force[i];
+      if (forcedType && panes[i].type !== forcedType) {
+        panes[i].type = forcedType;
+        renderPane(i);
+      } else if (!forcedType && panes[i].type === 'vnc' && currentLayout === '4chat') {
+        // Revert forced VNC back to chat when switching to 4chat
+        panes[i].type = 'chat';
+        renderPane(i);
+      }
+    } else {
+      el.classList.add('hidden');
+    }
+  }
+}
+
+// Token modal
+function showTokenModal() {
+  document.getElementById('token-input').value = localStorage.getItem('oc_token') || '';
+  document.getElementById('token-modal').classList.add('show');
+  document.getElementById('token-input').focus();
+}
+function hideTokenModal() { document.getElementById('token-modal').classList.remove('show'); }
+function saveToken() {
+  const t = document.getElementById('token-input').value.trim();
+  if (t) { localStorage.setItem('oc_token', t); hideTokenModal(); reconnect(); }
+}
+
+// WS
+function setConnState(s) {
+  document.getElementById('conn-status').className = s;
+  document.getElementById('conn-label').textContent = s === 'connected' ? 'Connected' : s === 'connecting' ? 'Connecting...' : 'Disconnected';
+}
+
+function send(method, params) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== 1) return reject(new Error('Not connected'));
+    const id = String(++msgId);
+    pending[id] = { resolve, reject };
+    ws.send(JSON.stringify({ type: 'req', id, method, params }));
+    setTimeout(() => { if (pending[id]) { delete pending[id]; reject(new Error('Timeout')); } }, 30000);
+  });
+}
+
+function reconnect() { if (ws) { ws.onclose = null; ws.close(); } connect(); }
+
+function connect() {
+  const token = localStorage.getItem('oc_token');
+  if (!token) return;
+  setConnState('connecting');
+  ws = new WebSocket(GW_URL);
+  ws.onopen = () => {};
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'event' && msg.event === 'connect.challenge') {
+      const cid = String(++msgId);
+      pending[cid] = {
+        resolve: () => { connected = true; setConnState('connected'); loadSessions(); },
+        reject: (e) => { setConnState('error'); console.error('Connect failed', e); }
+      };
+      ws.send(JSON.stringify({
+        type: 'req', id: cid, method: 'connect',
+        params: {
+          minProtocol: 3, maxProtocol: 3,
+          client: { id: 'webchat', version: '1.0', platform: 'web', mode: 'webchat' },
+          role: 'operator', scopes: ['operator.read', 'operator.write', 'operator.admin'],
+          auth: { token }, userAgent: navigator.userAgent, locale: navigator.language
+        }
+      }));
+      return;
+    }
+    if (msg.type === 'res' && msg.id && pending[msg.id]) {
+      const p = pending[msg.id]; delete pending[msg.id];
+      if (!msg.ok) p.reject(msg.error || {message:'Unknown error'}); else p.resolve(msg.payload);
+      return;
+    }
+    if (msg.type === 'event' && msg.event === 'chat' && msg.payload) handleChatEvent(msg.payload);
+  };
+  ws.onclose = () => { connected = false; setConnState('error'); setTimeout(connect, 3000); };
+  ws.onerror = () => {};
+}
+
+async function loadSessions() {
+  try {
+    const res = await send('sessions.list', { limit: 50 });
+    sessions = res.sessions || [];
+    // Auto-assign sessions to chat panes that don't have one yet
+    let si = 0;
+    for (let i = 0; i < 4; i++) {
+      if (panes[i].type === 'chat' && !panes[i].sessionKey && sessions[si]) {
+        panes[i].sessionKey = sessions[si].key;
+        si++;
+      }
+    }
+    for (let i = 0; i < 4; i++) {
+      renderPane(i);
+      if (panes[i].type === 'chat' && panes[i].sessionKey) loadHistory(i);
+    }
+    updateAllSelectors();
+  } catch (e) { console.error('Load failed', e); }
+}
+
+// Generate a consistent hue from a string, snapped to 12 distinct hues (30° apart)
+function hashHue(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  const slot = (h >>> 0) % 12;
+  return slot * 30;
+}
+
+function paneAccentColor(sessionKey) {
+  if (!sessionKey) return { h: 187, css: 'hsl(187,100%,50%)' }; // default cyan
+  const h = hashHue(sessionKey);
+  return { h, css: `hsl(${h},80%,55%)` };
+}
+
+function applyPaneTint(idx) {
+  const el = document.getElementById(`pane-${idx}`);
+  const p = panes[idx];
+  if (p.type !== 'chat' || !el) return;
+  const { h, css } = paneAccentColor(p.sessionKey);
+  el.style.setProperty('--pane-accent', css);
+  el.style.setProperty('--pane-accent-dim', `hsla(${h},80%,55%,0.12)`);
+  el.style.setProperty('--pane-accent-border', `hsla(${h},80%,55%,0.25)`);
+  el.style.setProperty('--pane-user-bg', `hsla(${h},60%,20%,0.4)`);
+}
+
+function friendlyName(s) {
+  if (s.label) return s.label;
+  if (s.displayName) return s.displayName;
+  const key = s.key || '';
+  // Fallback: make the key more readable
+  return key.replace('agent:main:', '').replace(/-/g, ' ').replace(/:/g, ' · ');
+}
+
+function updateAllSelectors() {
+  for (let i = 0; i < 4; i++) {
+    const sel = document.querySelector(`#pane-${i} .pane-session-select`);
+    if (!sel) continue;
+    const cur = panes[i].sessionKey;
+    sel.innerHTML = '<option value="">— Select Session —</option>' +
+      sessions.map(s => `<option value="${s.key}"${s.key === cur ? ' selected' : ''}>${friendlyName(s)}</option>`).join('');
+  }
+}
+
+async function loadHistory(idx) {
+  const p = panes[idx];
+  if (!p.sessionKey) return;
+  try {
+    const res = await send('chat.history', { sessionKey: p.sessionKey, limit: 200 });
+    p.messages = (res.messages || [])
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => {
+        const blocks = Array.isArray(m.content) ? m.content : [];
+        const text = typeof m.content === 'string' ? m.content :
+          blocks.filter(c => c.type === 'text').map(c => c.text).join('\n');
+        const images = blocks.filter(c => c.type === 'image' || c.type === 'image_url').map(c => {
+          if (c.type === 'image' && c.source?.data) {
+            const d = c.source.data;
+            return d.startsWith('data:') ? d : `data:${c.source.media_type || 'image/png'};base64,${d}`;
+          }
+          if (c.type === 'image_url') return c.image_url?.url;
+          return null;
+        }).filter(Boolean);
+        return { role: m.role, text, ts: m.timestamp, images: images.length ? images : undefined };
+      })
+      .filter(m => (m.text || m.images) && !m.text?.startsWith('System:') && (!m.text || m.text.length < 10000));
+    // Merge cached images from sessionStorage
+    const cached = loadPaneMessages(idx);
+    if (cached) {
+      for (const cm of cached) {
+        if (cm.images?.length) {
+          const match = p.messages.find(m => m.role === 'user' && m.text === cm.text && Math.abs((m.ts||0) - (cm.ts||0)) < 60000);
+          if (match) match.images = cm.images;
+        }
+      }
+    }
+    renderMessages(idx);
+  } catch (e) { console.error('History failed', e); }
+}
+
+function extractText(msg) {
+  if (!msg) return '';
+  if (typeof msg === 'string') return msg;
+  const c = msg.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) return c.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  return '';
+}
+
+function handleChatEvent(d) {
+  for (let i = 0; i < 4; i++) {
+    const p = panes[i];
+    if (p.type !== 'chat' || p.sessionKey !== d.sessionKey) continue;
+    if (d.state === 'delta') {
+      const text = extractText(d.message);
+      p.streaming = true;
+      if (text) p.streamText = text;
+      p.runId = d.runId;
+      renderMessages(i);
+    } else if (d.state === 'final') {
+      const text = extractText(d.message) || p.streamText;
+      if (text) {
+        p.messages.push({ role: 'assistant', text, ts: Date.now() });
+      }
+      p.streaming = false; p.streamText = ''; p.runId = null;
+      renderMessages(i); updateInputState(i);
+      // If no text in the event, reload history to get the response
+      if (!text) loadHistory(i);
+    } else if (d.state === 'aborted' || d.state === 'error') {
+      if (p.streamText) p.messages.push({ role: 'assistant', text: p.streamText + '\n\n⚠ ' + d.state, ts: Date.now() });
+      p.streaming = false; p.streamText = ''; p.runId = null;
+      renderMessages(i); updateInputState(i);
+    }
+  }
+}
+
+// Render helpers
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtTime(ts) { if (!ts) return ''; return new Date(ts).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+function renderMd(text) {
+  let h = escHtml(text);
+  h = h.replace(/```(\w*)\n([\s\S]*?)```/g, (_, l, c) => `<pre><code>${c}</code></pre>`);
+  h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  h = h.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  // Auto-link plain URLs (not already inside an href or markdown link)
+  h = h.replace(/(?<!")(https?:\/\/[^\s<)"]+)/g, '<a href="$1" target="_blank">$1</a>');
+  h = h.replace(/\n/g, '<br>');
+  h = h.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/g, (_, c) => `<pre><code>${c.replace(/<br>/g, '\n')}</code></pre>`);
+  return h;
+}
+
+function togglePaneType(idx) {
+  const p = panes[idx];
+  p.type = p.type === 'chat' ? 'vnc' : 'chat';
+  renderPane(idx);
+  if (p.type === 'chat') { updateAllSelectors(); if (p.sessionKey) loadHistory(idx); }
+}
+
+// Keep a single VNC iframe that we move between panes
+let vncIframe = null;
+function getVncIframe() {
+  if (!vncIframe) {
+    vncIframe = document.createElement('iframe');
+    vncIframe.className = 'vnc-frame';
+    vncIframe.allowFullscreen = true;
+    vncIframe.src = VNC_URL;
+  }
+  return vncIframe;
+}
+
+function renderPane(idx) {
+  const el = document.getElementById(`pane-${idx}`);
+  const p = panes[idx];
+  if (p.type === 'vnc') {
+    el.innerHTML = `<div class="pane-header">
+      <span class="pane-label">VNC</span>
+      <button class="pane-type-btn" onclick="togglePaneType(${idx})">→ Chat</button>
+    </div>`;
+    el.appendChild(getVncIframe());
+    return;
+  }
+  el.innerHTML = `
+    <div class="pane-header">
+      <span class="pane-label">P${idx+1}</span>
+      <select class="pane-session-select" onchange="switchSession(${idx}, this.value)"></select>
+      <button class="pane-type-btn" onclick="newSession(${idx})" title="New chat session">＋</button>
+      <button class="pane-type-btn" onclick="togglePaneType(${idx})">→ VNC</button>
+    </div>
+    <div class="chat-messages" id="msgs-${idx}"></div>
+    <div class="attach-bar" id="attachbar-${idx}"></div>
+    <div class="chat-input">
+      <button class="btn-attach" onclick="document.getElementById('file-${idx}').click()" title="Attach image">📎</button>
+      <input type="file" id="file-${idx}" accept="image/*" multiple style="display:none" onchange="handleFileSelect(${idx}, this)">
+      <textarea id="input-${idx}" placeholder="Type a message... (paste images with Ctrl+V)" rows="1" onkeydown="handleKey(event,${idx})" oninput="autoResize(this)" onpaste="handlePaste(event,${idx})"></textarea>
+      <button class="btn-send" id="send-${idx}" onclick="sendMsg(${idx})">▶</button>
+      <button class="btn-stop" id="stop-${idx}" onclick="abortMsg(${idx})">■</button>
+    </div>`;
+  updateAllSelectors();
+  applyPaneTint(idx);
+  renderMessages(idx);
+}
+
+function renderMessages(idx) {
+  const p = panes[idx];
+  const el = document.getElementById(`msgs-${idx}`);
+  if (!el) return;
+  let html = p.messages.map(m => {
+    let content = m.role === 'assistant' ? renderMd(m.text) : escHtml(m.text).replace(/\n/g, '<br>');
+    if (m.images && m.images.length) {
+      content += m.images.map(src => `<img class="msg-img" src="${src}">`).join('');
+    }
+    return `<div class="msg ${m.role}"><div>${content}</div><div class="msg-time">${fmtTime(m.ts)}</div></div>`;
+  }).join('');
+  if (p.streaming) {
+    html += `<div class="msg assistant"><div>${renderMd(p.streamText || '...')}</div></div>`;
+    html += `<div class="streaming-indicator"><div class="dots"><span>.</span><span>.</span><span>.</span></div> Generating</div>`;
+  }
+  el.innerHTML = html;
+  el.scrollTop = el.scrollHeight;
+  updateInputState(idx);
+  if (!p.streaming) savePaneMessages(idx);
+}
+
+function updateInputState(idx) {
+  const s = document.getElementById(`send-${idx}`), t = document.getElementById(`stop-${idx}`);
+  if (!s || !t) return;
+  if (panes[idx].streaming) { s.classList.add('hide'); t.classList.add('show'); }
+  else { s.classList.remove('hide'); t.classList.remove('show'); }
+}
+
+function switchSession(idx, key) {
+  panes[idx].sessionKey = key; panes[idx].messages = []; panes[idx].streaming = false; panes[idx].streamText = '';
+  applyPaneTint(idx);
+  if (key) loadHistory(idx); else renderMessages(idx);
+}
+
+async function sendMsg(idx) {
+  const p = panes[idx], input = document.getElementById(`input-${idx}`);
+  const text = input.value.trim();
+  const atts = p.attachments.slice();
+  if ((!text && !atts.length) || !p.sessionKey || p.streaming) return;
+  input.value = ''; autoResize(input);
+  p.attachments = []; renderAttachBar(idx);
+  const msgObj = { role: 'user', text, ts: Date.now(), images: atts.length ? atts.map(a => a.dataUrl) : undefined };
+  p.messages.push(msgObj);
+  p.streaming = true; renderMessages(idx);
+  try {
+    const params = {
+      sessionKey: p.sessionKey, message: text || (atts.length ? '[image]' : ''), deliver: false,
+      idempotencyKey: Math.random().toString(36).slice(2) + Date.now().toString(36)
+    };
+    // === IMAGE ATTACHMENT FORMAT ===
+    // Gateway chat.send expects: {type:"image", mimeType:"image/png", content:"<raw-base64>"}
+    // This matches the built-in control UI (Nu() parses dataUrl → {mimeType, content})
+    if (atts.length) {
+      params.attachments = atts.map(a => ({ type: 'image', mimeType: a.mimeType, content: a.base64 }));
+    }
+    console.log('[dashboard] sending to', p.sessionKey, 'text:', JSON.stringify(text?.slice(0,100)), 'has newlines:', text?.includes('\n'), 'attachments:', atts.length);
+    if (atts.length) {
+      console.log('[dashboard] attachment[0] mimeType:', atts[0].mimeType, 'base64 length:', atts[0].base64?.length, 'starts with:', atts[0].base64?.slice(0,30));
+      console.log('[dashboard] params.attachments[0]:', JSON.stringify(params.attachments[0]).slice(0,200));
+    }
+    const res = await send('chat.send', params);
+    console.log('[dashboard] send result:', JSON.stringify(res));
+  } catch (e) {
+    console.error('[dashboard] send error:', e);
+    p.streaming = false;
+    p.messages.push({ role: 'assistant', text: '⚠ ' + (e.message || e), ts: Date.now() });
+    renderMessages(idx);
+  }
+}
+
+async function abortMsg(idx) {
+  if (!panes[idx].sessionKey) return;
+  try { await send('chat.abort', { sessionKey: panes[idx].sessionKey }); } catch(e) {}
+}
+
+let sessionCounter = parseInt(localStorage.getItem('oc_sess_counter') || '0');
+async function newSession(idx) {
+  sessionCounter++;
+  localStorage.setItem('oc_sess_counter', String(sessionCounter));
+  const key = `agent:main:dashboard-${sessionCounter}`;
+  const label = `Dashboard ${sessionCounter}`;
+  panes[idx].sessionKey = key;
+  panes[idx].messages = [];
+  panes[idx].streaming = false;
+  panes[idx].streamText = '';
+  if (!sessions.find(s => s.key === key)) {
+    sessions.push({ key, label, displayName: label });
+  }
+  // Set the label on the server
+  try { await send('sessions.patch', { key, label }); } catch(e) {}
+  updateAllSelectors();
+  renderMessages(idx);
+}
+
+function handleKey(e, idx) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(idx); }
+  // Shift+Enter: let default behavior insert newline
+}
+function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 100) + 'px'; }
+
+// === IMAGE ATTACHMENT FLOW ===
+// 1. Ctrl+V paste → handlePaste() → addAttachment() → fileToBase64() → pane.attachments[]
+// 2. 📎 button click → <input type=file> → handleFileSelect() → addAttachment()
+// 3. Send button → sendMsg() reads pane.attachments, maps to gateway format:
+//    {type:"image", media_type:"image/png", data:"<base64>"} — field names MUST match gateway protocol
+// 4. After send, attachments are cleared. Images are cached in sessionStorage for re-display.
+// NOTE: Gateway chat.history does NOT return image data, so we cache sent images locally.
+// Images are resized client-side (max 1600px) to avoid WS/gateway size issues.
+function fileToBase64(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1200;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          const scale = Math.min(MAX / w, MAX / h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        const base64 = dataUrl.split(',')[1];
+        console.log(`[dashboard] resized image: ${img.width}x${img.height} → ${w}x${h}, base64 length: ${base64.length}`);
+        resolve({ mimeType: 'image/jpeg', base64, dataUrl });
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function handlePaste(e, idx) {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) addAttachment(idx, file);
+    }
+  }
+}
+
+function handleFileSelect(idx, input) {
+  for (const file of input.files) {
+    if (file.type.startsWith('image/')) addAttachment(idx, file);
+  }
+  input.value = '';
+}
+
+async function addAttachment(idx, file) {
+  const { mimeType, base64, dataUrl } = await fileToBase64(file);
+  panes[idx].attachments.push({ mimeType, base64, dataUrl });
+  renderAttachBar(idx);
+}
+
+function removeAttachment(idx, ai) {
+  panes[idx].attachments.splice(ai, 1);
+  renderAttachBar(idx);
+}
+
+function renderAttachBar(idx) {
+  const bar = document.getElementById(`attachbar-${idx}`);
+  if (!bar) return;
+  const atts = panes[idx].attachments;
+  bar.innerHTML = atts.map((a, i) =>
+    `<div class="attach-thumb"><img src="${a.dataUrl}"><button class="remove" onclick="removeAttachment(${idx},${i})">×</button></div>`
+  ).join('');
+}
+
+// Persist messages with images in sessionStorage (survives refresh within tab)
+function savePaneMessages(idx) {
+  try {
+    const key = 'oc_msgs_' + (panes[idx].sessionKey || idx);
+    const msgs = panes[idx].messages.map(m => ({...m, images: m.images?.map(img => img.length > 50000 ? null : img).filter(Boolean)}));
+    sessionStorage.setItem(key, JSON.stringify(msgs.slice(-100)));
+  } catch(e) {}
+}
+function loadPaneMessages(idx) {
+  try {
+    const key = 'oc_msgs_' + (panes[idx].sessionKey || idx);
+    const data = sessionStorage.getItem(key);
+    if (data) return JSON.parse(data);
+  } catch(e) {}
+  return null;
+}
+
+// Init
+for (let i = 0; i < 4; i++) renderPane(i);
+applyLayout();
+if (checkAuthGate()) connect();
+</script>
+</body>
+</html>
