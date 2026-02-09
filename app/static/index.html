@@ -17,7 +17,7 @@
 :root{
   --bg:#060612;--surface:#0c0c1e;--surface2:#12122a;
   --border:rgba(0,255,200,0.08);--border-bright:rgba(0,255,200,0.2);
-  --text:#c8d6e5;--text-dim:#4a5568;--text-bright:#e8f0fe;
+  --text:#d0dae8;--text-dim:#7a8a9e;--text-bright:#e8f0fe;
   --cyan:#00ffc8;--cyan-dim:rgba(0,255,200,0.15);--cyan-glow:rgba(0,255,200,0.3);
   --purple:#8b5cf6;--purple-glow:rgba(139,92,246,0.3);
   --green:#00ff88;--green-glow:rgba(0,255,136,0.3);
@@ -307,16 +307,8 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
     <!-- ═══ VOICE TAB ═══ -->
     <div class="tab-page active" id="voicePage">
       <div class="voice-main">
-        <div class="main-header">
-          <span class="title">◈ Neural Link</span>
-          <div class="view-toggle" id="viewToggle">
-            <button class="active" data-view="face">◉ Avatar</button>
-            <button data-view="vnc">⊞ Desktop</button>
-          </div>
-        </div>
         <div class="main-content">
           <div class="view" id="faceView"><div id="faceContainer"></div></div>
-          <div class="view hidden" id="voiceVncView"><iframe id="voice-vnc-frame"></iframe></div>
         </div>
       </div>
       <button class="voice-collapse-btn" id="voiceCollapseBtn" title="Toggle sidebar">›</button>
@@ -431,16 +423,7 @@ const micBtn=$('micBtn'),voiceMessages=$('voiceMessages'),statusDot=$('statusDot
       statusText=$('statusText'),textInput=$('textInput'),voiceLabel=$('voiceLabel'),
       waveform=$('waveform'),wakeToggle=$('wakeToggle'),wakeIndicator=$('wakeIndicator');
 
-// View Toggle (Face/VNC)
-document.querySelectorAll('.view-toggle button').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    document.querySelectorAll('.view-toggle button').forEach(b=>b.classList.remove('active'));
-    btn.classList.add('active');
-    const view=btn.dataset.view;
-    document.querySelectorAll('.voice-main .main-content>.view').forEach(v=>v.classList.add('hidden'));
-    $(view==='face'?'faceView':'voiceVncView').classList.remove('hidden');
-  });
-});
+// View toggle removed — Desktop has its own tab now
 
 // Waveform bars
 for(let i=0;i<48;i++){const b=document.createElement('div');b.className='bar';b.style.height='2px';waveform.appendChild(b)}
@@ -631,9 +614,8 @@ $('voiceCollapseBtn').addEventListener('click',()=>{
   $('voiceCollapseBtn').textContent=$('voiceChatPanel').classList.contains('collapsed')?'‹':'›';
 });
 
-// Voice VNC frame
+// VNC base URL (used by Desktop tab)
 const vncBaseUrl=`${location.origin}/vnc/vnc.html?autoconnect=true&resize=scale&password=chhotu123&view_only=false`;
-$('voice-vnc-frame').src=vncBaseUrl;
 
 
 // ═══════════════════════════════════════════════════════════════════
