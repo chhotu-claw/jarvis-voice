@@ -382,18 +382,65 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;
      SCRIPTS
      ═══════════════════════════════════════════════════════════════════ -->
 <script>
+// ── Gateway Config ──
+// When running on Netlify (app.chhotu.online), API calls go to chhotu.online
+// When running locally, API calls go to same origin
+const GATEWAY_HOST = (location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname.startsWith('192.168.'))
+  ? location.origin
+  : 'https://chhotu.online';
+const GATEWAY_WS = GATEWAY_HOST.replace('https:', 'wss:').replace('http:', 'ws:');
+
+function getToken() { return sessionStorage.getItem('gw_session') || ''; }
+function apiHeaders() { return { 'Authorization': `Bearer ${getToken()}`, 'Content-Type': 'application/json' }; }
+function apiUrl(path) { return `${GATEWAY_HOST}${path}`; }
+function wsUrl(path) { return `${GATEWAY_WS}${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(getToken())}`; }
+
 // ── Auth ──
 const PW_HASH = '450de2c07a277ecd67fbe4fe7c78dd88cab84811fa5796459e6651048d1f6841';
 async function sha256(s){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,'0')).join('')}
-function initAuth(){
+async function initAuth(){
   const isLocal=location.hostname==='localhost'||location.hostname==='127.0.0.1'||location.hostname.startsWith('192.168.');
-  if(isLocal||sessionStorage.getItem('oc_auth')==='1'){document.getElementById('auth-gate').classList.remove('show');return true}
+  if(isLocal){
+    // Auto-login on LAN
+    if(!sessionStorage.getItem('gw_session')){
+      try{
+        const res=await fetch(apiUrl('/api/auth/login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:'chhotu123'})});
+        const data=await res.json();
+        if(data.token)sessionStorage.setItem('gw_session',data.token);
+      }catch(e){}
+    }
+    document.getElementById('auth-gate').classList.remove('show');return true;
+  }
+  if(sessionStorage.getItem('oc_auth')==='1'&&sessionStorage.getItem('gw_session')){document.getElementById('auth-gate').classList.remove('show');return true}
   document.getElementById('auth-gate').classList.add('show');document.getElementById('auth-pw').focus();return false;
 }
 async function checkAuth(){
   const pw=document.getElementById('auth-pw').value;
-  if(await sha256(pw)===PW_HASH){sessionStorage.setItem('oc_auth','1');document.getElementById('auth-gate').classList.remove('show');initApp()}
-  else document.getElementById('auth-err').textContent='Wrong password';
+  // Authenticate against gateway API
+  try {
+    const res = await fetch(apiUrl('/api/auth/login'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw})
+    });
+    const data = await res.json();
+    if(data.ok && data.token){
+      sessionStorage.setItem('oc_auth','1');
+      sessionStorage.setItem('gw_session', data.token);
+      document.getElementById('auth-gate').classList.remove('show');
+      initApp();
+    } else {
+      document.getElementById('auth-err').textContent='Wrong password';
+    }
+  } catch(e) {
+    // Fallback to client-side check (local network, gateway down)
+    if(await sha256(pw)===PW_HASH){
+      sessionStorage.setItem('oc_auth','1');
+      document.getElementById('auth-gate').classList.remove('show');initApp();
+    } else {
+      document.getElementById('auth-err').textContent='Connection failed';
+    }
+  }
 }
 
 // ── Tab switching ──
@@ -408,7 +455,7 @@ document.querySelectorAll('.tab-btn').forEach(btn=>{
     if(btn.dataset.tab==='desktop'){
       const f=$('desktop-vnc-frame');
       if(!f.src||!f.src.includes('vnc')){
-        const vncUrl=`${location.origin}/vnc/vnc.html?autoconnect=true&resize=scale&password=chhotu123&view_only=false`;
+        const vncUrl=`${GATEWAY_HOST}/vnc/vnc.html?autoconnect=true&resize=scale&password=chhotu123&view_only=false`;
         f.src=vncUrl;
       }
     }
@@ -472,7 +519,7 @@ function playBeep(){const ctx=new AudioContext(),osc=ctx.createOscillator(),g=ct
 function connectVoice(){
   if(voiceWs&&voiceWs.readyState<=1)return;
   const proto=location.protocol==='https:'?'wss:':'ws:';
-  voiceWs=new WebSocket(`${proto}//${location.host}/ws/voice`);
+  voiceWs=new WebSocket(wsUrl('/ws/voice'));
   voiceWs.onopen=()=>{setStatus('','Link Established');addVMsg('system','◈ Connected to neural interface');if(wakeToggle.checked)voiceWs.send(JSON.stringify({type:'wake_enable'}))};
   voiceWs.onmessage=e=>{
     const d=JSON.parse(e.data);
@@ -615,15 +662,16 @@ $('voiceCollapseBtn').addEventListener('click',()=>{
 });
 
 // VNC base URL (used by Desktop tab)
-const vncBaseUrl=`${location.origin}/vnc/vnc.html?autoconnect=true&resize=scale&password=chhotu123&view_only=false`;
+const vncBaseUrl=`${GATEWAY_HOST}/vnc/vnc.html?autoconnect=true&resize=scale&password=chhotu123&view_only=false`;
 
 
 // ═══════════════════════════════════════════════════════════════════
 // CHAT TAB LOGIC (ported from dashboard.html)
 // ═══════════════════════════════════════════════════════════════════
 const DEFAULT_TOKEN='1f25ead148b815f60be7a33515ec38f44ff0355fb1c85cff';
-const isLocal=location.hostname==='localhost'||location.hostname==='127.0.0.1'||location.hostname.startsWith('192.168.');
-const GW_URL=isLocal?`ws://${location.hostname}:18789`:`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/ws/gateway`;
+const GW_URL = GATEWAY_HOST === location.origin
+  ? (location.hostname.startsWith('192.168.') ? `ws://${location.hostname}:18789` : `${GATEWAY_WS}/ws/gateway`)
+  : `${GATEWAY_WS}/ws/gateway`;
 if(!localStorage.getItem('oc_token'))localStorage.setItem('oc_token',DEFAULT_TOKEN);
 
 let gwWs=null,gwMsgId=0,gwConnected=false;
@@ -864,7 +912,7 @@ function initChatPanes(){for(let i=0;i<4;i++)renderChatPane(i);applyChatLayout()
 let servicesData={};
 async function loadServices(){
   try{
-    const res=await fetch('/api/services');servicesData=await res.json();renderServices();
+    const res=await fetch(apiUrl('/api/services'),{headers:apiHeaders()});servicesData=await res.json();renderServices();
   }catch(e){$('svcGrid').innerHTML=`<div style="color:var(--red)">Failed to load services: ${e.message}</div>`}
 }
 
@@ -900,7 +948,7 @@ function renderServices(){
 async function svcAction(id,action){
   try{
     const btn=event.target;btn.textContent='...';btn.disabled=true;
-    const res=await fetch(`/api/services/${id}/${action}`,{method:'POST'});const data=await res.json();
+    const res=await fetch(apiUrl(`/api/services/${id}/${action}`),{method:'POST',headers:apiHeaders()});const data=await res.json();
     if(data.ok){servicesData[id].systemdStatus=data.status}
     await loadServices();
   }catch(e){alert('Action failed: '+e.message)}
@@ -910,7 +958,7 @@ async function toggleSvcLogs(id){
   const el=document.getElementById(`svc-logs-${id}`);
   if(el.style.display==='none'){
     el.style.display='block';
-    try{const res=await fetch(`/api/services/${id}/logs?lines=50`);const data=await res.json();el.querySelector('pre').textContent=data.logs||'No logs'}
+    try{const res=await fetch(apiUrl(`/api/services/${id}/logs?lines=50`),{headers:apiHeaders()});const data=await res.json();el.querySelector('pre').textContent=data.logs||'No logs'}
     catch(e){el.querySelector('pre').textContent='Failed: '+e.message}
   }else el.style.display='none';
 }

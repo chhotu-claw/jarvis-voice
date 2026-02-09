@@ -125,7 +125,7 @@ OLLAMA_MODEL = "llama3.1:8b"
 PIPER_MODEL = str(Path.home() / "chhotu-voice/voices/voice.onnx")
 MEMORY_DIR = str(Path.home() / ".openclaw/workspace")
 WHISPER_MODEL = "small.en"
-WAKE_WORD_THRESHOLD = 0.25  # sensitivity (0-1, lower = more sensitive)
+WAKE_WORDS = ["hey chhotu", "hey jarvis", "he chhotu", "a chhotu", "hey chotu", "hey jhottu"]
 EDGE_TTS_VOICE = "en-US-GuyNeural"  # fallback
 KOKORO_MODEL = str(Path.home() / "chhotu-voice/kokoro-v1.0.onnx")
 KOKORO_VOICES = str(Path.home() / "chhotu-voice/voices-v1.0.bin")
@@ -180,19 +180,6 @@ NEVER route questions. NEVER route "what is", "how is", "tell me about", etc. Ju
 
 {memory}
 """
-
-# ── Wake Word Model (lazy load) ─────────────────────────────────────────
-_wakeword_model = None
-
-def get_wakeword_model():
-    global _wakeword_model
-    if _wakeword_model is None:
-        from openwakeword.model import Model
-        import openwakeword
-        pkg_dir = os.path.dirname(openwakeword.__file__)
-        model_path = os.path.join(pkg_dir, "resources", "models", "hey_jarvis_v0.1.onnx")
-        _wakeword_model = Model(wakeword_model_paths=[model_path])
-    return _wakeword_model
 
 # ── Whisper (lazy load) ─────────────────────────────────────────────────
 _whisper_model = None
@@ -410,12 +397,13 @@ async def stream_tts_to_ws(ws, text: str):
     await ws.send_json({"type": "audio_end", "chunks": chunk_count})
 
 
-async def process_voice(ws: WebSocket, audio_bytes: bytes, sample_rate: int = 16000, audio_format: str = "pcm"):
+async def process_voice(ws: WebSocket, audio_bytes: bytes, sample_rate: int = 16000, audio_format: str = "pcm", text: str = None):
     """Transcribe → LLM → TTS → send back. Routes to Claude if needed."""
-    await ws.send_json({"type": "status", "status": "transcribing"})
-    text = await asyncio.to_thread(transcribe_audio, audio_bytes, sample_rate, audio_format)
+    if text is None:
+        await ws.send_json({"type": "status", "status": "transcribing"})
+        text = await asyncio.to_thread(transcribe_audio, audio_bytes, sample_rate, audio_format)
     
-    if not text.strip():
+    if not text or not text.strip():
         await ws.send_json({"type": "status", "status": "idle"})
         return
     
@@ -459,103 +447,138 @@ async def voice_ws(ws: WebSocket):
     await ws.accept()
     print("🐣 Voice client connected")
     
-    # Per-connection wake word model state
-    ww_model = None
-    wake_word_enabled = False
-    wake_counter = [0]
+    conversation_mode = False
+    conversation_timer = None
+    
+    async def reset_conversation_timer():
+        nonlocal conversation_mode, conversation_timer
+        if conversation_timer:
+            conversation_timer.cancel()
+        async def timeout():
+            nonlocal conversation_mode
+            await asyncio.sleep(30)
+            conversation_mode = False
+            try:
+                await ws.send_json({"type": "conversation_end"})
+            except Exception:
+                pass
+        conversation_timer = asyncio.create_task(timeout())
     
     try:
         while True:
-            data = await ws.receive_json()
-            msg_type = data.get("type")
-            print(f"📨 Received: {msg_type}")
+            msg = await ws.receive()
             
-            if msg_type == "audio":
-                # Push-to-talk: receive audio, transcribe, respond
-                audio_b64 = data.get("audio", "")
-                sample_rate = data.get("sampleRate", 16000)
-                audio_format = data.get("format", "pcm")
-                audio_bytes = base64.b64decode(audio_b64)
-                await process_voice(ws, audio_bytes, sample_rate, audio_format)
-            
-            elif msg_type == "wake_audio":
-                # Continuous audio stream for wake word detection
-                if not wake_word_enabled:
-                    continue
-                
-                try:
-                    audio_b64 = data.get("audio", "")
-                    audio_bytes = base64.b64decode(audio_b64)
-                    audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+            if msg["type"] == "websocket.receive":
+                # Binary message — VAD audio or legacy webm
+                if "bytes" in msg and msg["bytes"]:
+                    data = msg["bytes"]
                     
-                    # Log audio level periodically
-                    wake_counter[0] += 1
-                    if wake_counter[0] % 50 == 0:
-                        rms = np.sqrt(np.mean(audio_int16.astype(np.float32)**2))
-                        print(f"🎙️ Audio RMS: {rms:.1f}, samples: {len(audio_int16)}, min/max: {audio_int16.min()}/{audio_int16.max()}")
-                    
-                    if ww_model is None:
-                        ww_model = await asyncio.to_thread(get_wakeword_model)
-                    
-                    for i in range(0, len(audio_int16) - 1279, 1280):
-                        chunk = audio_int16[i:i+1280]
-                        prediction = ww_model.predict(chunk)
+                    # Check for VAD audio marker
+                    if data[:9] == b'VAD_AUDIO' and len(data) > 10 and data[9] == 0:
+                        pcm_bytes = data[10:]
+                        print(f"🎙️ VAD audio received: {len(pcm_bytes)} bytes")
                         
-                        for key, score in prediction.items():
-                            if score > 0.01 or wake_counter[0] % 100 == 0:
-                                print(f"🔊 {key}: {score:.4f}")
-                            
-                            if score > WAKE_WORD_THRESHOLD:
-                                print(f"🎯 Wake word detected! ({key}: {score:.2f})")
-                                ww_model.reset()
-                                await ws.send_json({"type": "wake_detected"})
-                                break
-                except Exception as e:
-                    print(f"❌ Wake audio error: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            elif msg_type == "wake_enable":
-                wake_word_enabled = True
-                # Lazy-load model
-                if ww_model is None:
-                    await ws.send_json({"type": "status", "status": "Loading wake word model..."})
-                    ww_model = await asyncio.to_thread(get_wakeword_model)
-                await ws.send_json({"type": "wake_status", "enabled": True})
-                print("🎯 Wake word detection ENABLED")
-            
-            elif msg_type == "wake_disable":
-                wake_word_enabled = False
-                await ws.send_json({"type": "wake_status", "enabled": False})
-                print("🎯 Wake word detection DISABLED")
-            
-            elif msg_type == "text":
-                text = data.get("text", "")
-                if not text.strip():
-                    continue
+                        # Transcribe with Whisper
+                        text = await asyncio.to_thread(transcribe_audio, pcm_bytes, 16000, "pcm")
+                        
+                        if not text or len(text.strip()) < 2:
+                            print(f"🔇 Empty/short transcript, skipping")
+                            continue
+                        
+                        print(f"📝 VAD transcript: {text}")
+                        text_lower = text.lower().strip()
+                        is_wake = any(w in text_lower for w in WAKE_WORDS)
+                        
+                        if is_wake and not conversation_mode:
+                            conversation_mode = True
+                            await reset_conversation_timer()
+                            await ws.send_json({"type": "wake_detected", "text": text})
+                            print(f"🎯 Wake word detected in: {text}")
+                            # Strip wake word from text
+                            remaining = text_lower
+                            for w in WAKE_WORDS:
+                                remaining = remaining.replace(w, "").strip()
+                            if remaining and len(remaining) > 2:
+                                await process_voice(ws, None, text=remaining)
+                            continue
+                        
+                        if conversation_mode:
+                            await reset_conversation_timer()
+                            await ws.send_json({"type": "transcript", "text": text})
+                            await process_voice(ws, None, text=text)
+                            continue
+                        
+                        # Not in conversation mode and no wake word — ignore
+                        print(f"🔇 Ignoring (no wake word, not in conversation): {text}")
+                        continue
+                    
+                    # Legacy: could be raw binary from old PTT — ignore or handle
+                    print(f"📦 Unknown binary message: {len(data)} bytes")
                 
-                await ws.send_json({"type": "transcript", "text": text})
-                await ws.send_json({"type": "status", "status": "thinking"})
-                
-                result = await chat_local(text)
-                
-                await ws.send_json({
-                    "type": "response",
-                    "text": result["text"],
-                    "routed": result["routed"],
-                    "routeTask": result.get("route_task"),
-                })
-                
-                await ws.send_json({"type": "status", "status": "speaking"})
-                await stream_tts_to_ws(ws, result["text"])
-                
-                await ws.send_json({"type": "status", "status": "idle"})
-            
-            elif msg_type == "ping":
-                await ws.send_json({"type": "pong"})
+                # Text/JSON message
+                elif "text" in msg and msg["text"]:
+                    data = json.loads(msg["text"])
+                    msg_type = data.get("type")
+                    print(f"📨 Received: {msg_type}")
+                    
+                    if msg_type == "audio":
+                        # Push-to-talk: receive audio, transcribe, respond
+                        audio_b64 = data.get("audio", "")
+                        sample_rate = data.get("sampleRate", 16000)
+                        audio_format = data.get("format", "pcm")
+                        audio_bytes = base64.b64decode(audio_b64)
+                        await process_voice(ws, audio_bytes, sample_rate, audio_format)
+                    
+                    elif msg_type == "wake_enable":
+                        await ws.send_json({"type": "wake_status", "enabled": True})
+                        print("🎯 Wake word detection ENABLED (VAD mode)")
+                    
+                    elif msg_type == "wake_disable":
+                        conversation_mode = False
+                        if conversation_timer:
+                            conversation_timer.cancel()
+                            conversation_timer = None
+                        await ws.send_json({"type": "wake_status", "enabled": False})
+                        print("🎯 Wake word detection DISABLED")
+                    
+                    elif msg_type == "text":
+                        text = data.get("text", "")
+                        if not text.strip():
+                            continue
+                        
+                        await ws.send_json({"type": "transcript", "text": text})
+                        await ws.send_json({"type": "status", "status": "thinking"})
+                        
+                        result = await chat_local(text)
+                        
+                        await ws.send_json({
+                            "type": "response",
+                            "text": result["text"],
+                            "routed": result["routed"],
+                            "routeTask": result.get("route_task"),
+                        })
+                        
+                        await ws.send_json({"type": "status", "status": "speaking"})
+                        await stream_tts_to_ws(ws, result["text"])
+                        
+                        if result["routed"] and result.get("route_task"):
+                            await ws.send_json({"type": "status", "status": "thinking"})
+                            claude_reply = await route_to_claude(result["route_task"])
+                            conversation_history.append({"role": "assistant", "content": f"[Backend result]: {claude_reply}"})
+                            await ws.send_json({"type": "response", "text": claude_reply, "routed": True})
+                            await ws.send_json({"type": "status", "status": "speaking"})
+                            await stream_tts_to_ws(ws, claude_reply)
+                        
+                        await ws.send_json({"type": "status", "status": "idle"})
+                    
+                    elif msg_type == "ping":
+                        await ws.send_json({"type": "pong"})
     
     except WebSocketDisconnect:
         print("🐣 Voice client disconnected")
+    finally:
+        if conversation_timer:
+            conversation_timer.cancel()
 
 # ── Service Management ───────────────────────────────────────────────────
 def load_services():
